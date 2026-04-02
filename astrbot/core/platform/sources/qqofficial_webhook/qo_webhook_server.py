@@ -3,6 +3,7 @@ import logging
 import time
 from typing import cast
 
+import botpy.http
 import quart
 from botpy import BotAPI, BotHttp, BotWebSocket, Client, ConnectionSession, Token
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -40,6 +41,7 @@ class QQOfficialWebhook:
         self.client = botpy_client
         self.event_queue = event_queue
         self.shutdown_event = asyncio.Event()
+        self.bot_info: dict | None = None  # 机器人信息，通过 /users/@me API 获取
         # Deduplication cache for webhook retry callbacks.
         self._seen_event_ids: dict[str, float] = {}
         self._dedup_ttl: int = 60  # seconds
@@ -53,7 +55,24 @@ class QQOfficialWebhook:
         self.client.http = self.http
 
         async def bot_connect() -> None:
-            pass
+            # 连接成功后获取机器人详细信息
+            try:
+                route = botpy.http.Route("GET", "/users/@me")
+                user_info = await self.http.request(route)
+                if user_info and isinstance(user_info, dict):
+                    self.bot_info = {
+                        "id": user_info.get("id", ""),
+                        "username": user_info.get("username", ""),
+                        "avatar": user_info.get("avatar", ""),
+                        "bot": user_info.get("bot", True),
+                    }
+                    logger.info(
+                        f"[QQOfficialWebhook] 机器人信息: ID={self.bot_info['id']}, "
+                        f"用户名={self.bot_info['username']}"
+                    )
+            except Exception as e:
+                logger.warning(f"[QQOfficialWebhook] 获取机器人信息失败: {e}")
+                self.bot_info = None
 
         self._connection = ConnectionSession(
             max_async=1,

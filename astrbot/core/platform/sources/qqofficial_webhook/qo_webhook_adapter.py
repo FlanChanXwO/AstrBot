@@ -34,6 +34,7 @@ class botClient(Client):
         abm = await QQOfficialPlatformAdapter._parse_from_qqofficial(
             message,
             MessageType.GROUP_MESSAGE,
+            self.platform.appid,
         )
         abm.group_id = cast(str, message.group_openid)
         abm.session_id = abm.group_id
@@ -45,6 +46,7 @@ class botClient(Client):
         abm = await QQOfficialPlatformAdapter._parse_from_qqofficial(
             message,
             MessageType.GROUP_MESSAGE,
+            self.platform.appid,
         )
         abm.group_id = message.channel_id
         abm.session_id = abm.group_id
@@ -58,6 +60,7 @@ class botClient(Client):
         abm = await QQOfficialPlatformAdapter._parse_from_qqofficial(
             message,
             MessageType.FRIEND_MESSAGE,
+            self.platform.appid,
         )
         abm.session_id = abm.sender.user_id
         self.platform.remember_session_scene(abm.session_id, "friend")
@@ -68,6 +71,7 @@ class botClient(Client):
         abm = await QQOfficialPlatformAdapter._parse_from_qqofficial(
             message,
             MessageType.FRIEND_MESSAGE,
+            self.platform.appid,
         )
         abm.session_id = abm.sender.user_id
         self.platform.remember_session_scene(abm.session_id, "friend")
@@ -112,6 +116,7 @@ class QQOfficialWebhookPlatformAdapter(Platform):
         )
         self.client.set_platform(self)
         self.webhook_helper = None
+        self.bot_info: dict | None = None  # 机器人信息，通过 /users/@me API 获取
         self._session_last_message_id: dict[str, str] = {}
         self._session_scene: dict[str, str] = {}
 
@@ -160,6 +165,14 @@ class QQOfficialWebhookPlatformAdapter(Platform):
             self.client,
         )
         await self.webhook_helper.initialize()
+
+        # 从 webhook_helper 获取机器人信息
+        if self.webhook_helper.bot_info:
+            self.bot_info = self.webhook_helper.bot_info
+            logger.info(
+                f"[QQOfficialWebhook] 机器人信息: ID={self.bot_info['id']}, "
+                f"用户名={self.bot_info['username']}"
+            )
 
         # 如果启用统一 webhook 模式，则不启动独立服务器
         webhook_uuid = self.config.get("webhook_uuid")

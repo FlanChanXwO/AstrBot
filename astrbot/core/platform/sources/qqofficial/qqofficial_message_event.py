@@ -65,6 +65,22 @@ class QQOfficialMessageEvent(AstrMessageEvent):
         self.bot = bot
         self.send_buffer = None
 
+    def get_bot_info(self) -> dict | None:
+        """获取机器人的详细信息。
+
+        Returns:
+            dict | None: 包含机器人信息的字典，包括:
+                - id: 机器人的频道 ID
+                - username: 机器人用户名
+                - avatar: 头像 URL
+                - bot: 是否为机器人
+            如果信息未获取到则返回 None。
+        """
+        platform = getattr(self.bot, "platform", None)
+        if platform:
+            return getattr(platform, "bot_info", None)
+        return None
+
     async def send(self, message: MessageChain) -> None:
         self.send_buffer = message
         await self._post_send()
