@@ -891,11 +891,7 @@ class TelegramPlatformAdapter(Platform):
             context,
             from_user,
             message_text=message_text,
-            message_id=str(
-                getattr(callback_query, "id", None)
-                or getattr(source_message, "message_id", "")
-                or "",
-            ),
+            message_id=str(getattr(source_message, "message_id", "") or ""),
             chat=source_chat,
             source_message=source_message,
         )

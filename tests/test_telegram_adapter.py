@@ -1172,6 +1172,7 @@ async def test_telegram_callback_query_is_converted_to_platform_event():
 
     assert abm is not None
     assert abm.message_str == "approval:yes"
+    assert abm.message_id == "99"
     assert abm.sender.user_id == "42"
     assert abm.group_id == "-100#7"
     assert abm.session_id == "-100#7"
@@ -1188,12 +1189,20 @@ async def test_telegram_callback_query_is_converted_to_platform_event():
     assert event.get_interaction_user_id() == "42"
 
     await event.answer_interaction("done", show_alert=True, cache_time=5)
+    await event.edit_text("edited")
+    await event.edit_reply_markup(reply_markup=None)
 
     callback_query.answer.assert_awaited_once_with(
         text="done",
         show_alert=True,
         url=None,
         cache_time=5,
+    )
+    assert adapter.client.edit_message_text.await_args.kwargs["chat_id"] == "-100"
+    assert adapter.client.edit_message_text.await_args.kwargs["message_id"] == 99
+    assert adapter.client.edit_message_reply_markup.await_args.kwargs["chat_id"] == "-100"
+    assert (
+        adapter.client.edit_message_reply_markup.await_args.kwargs["message_id"] == 99
     )
 
 
