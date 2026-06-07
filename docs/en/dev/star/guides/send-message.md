@@ -261,6 +261,136 @@ async def on_telegram_button(self, event: AstrMessageEvent):
 
 Use `event.ack_interaction()` for a quick acknowledgment so the Telegram client stops showing the button loading state. Use `event.answer_interaction(text, show_alert=False)` to answer the callback query; `show_alert=True` shows an alert dialog. `event.get_interaction_custom_id()` and `event.get_interaction_data()` both return Telegram `callback_data`, which is the value set by `TelegramInlineButton(..., callback_data="approve:42")` above.
 
+For more complex menus such as paginated lists, setting selection, and back navigation, use the Telegram-specific menu framework. The framework stores a short token, state, and back stack for each menu message. Button `callback_data` uses `tgm:<namespace>:<token>:<action>`, so keep complex data in menu state or plugin storage instead of putting it in `callback_data`.
+
+```python
+from urllib.parse import urlsplit
+
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.core.platform.sources.telegram.filters import telegram_event_filter
+from astrbot.core.platform.sources.telegram.menu import (
+    PluginKVTelegramMenuStore,
+    TelegramMenu,
+    TelegramMenuButton,
+    TelegramMenuContext,
+    TelegramMenuInput,
+    TelegramMenuPaginator,
+    TelegramMenuView,
+)
+
+TELEGRAM_SETTINGS_CALLBACK_PREFIX = "tgm:rss_settings:"
+
+
+class Main:
+    def __init__(self, context):
+        self.context = context
+        self.settings_menu = TelegramMenu(
+            "rss_settings",
+            self.render_settings_menu,
+            store=PluginKVTelegramMenuStore(self),
+            invalid_text="This menu has expired. Please send /set again.",
+        )
+
+    @filter.command("set")
+    async def open_settings(self, event: AstrMessageEvent):
+        chain = await self.settings_menu.open(
+            {
+                "page": "list",
+                "page_index": 0,
+                "urls": {
+                    "morning": "https://example.com/morning.xml",
+                    "pixiv": "https://example.com/pixiv.xml",
+                },
+            }
+        )
+        yield event.chain_result(chain.chain)
+
+    @filter.custom_filter(
+        telegram_event_filter(
+            "callback_query",
+            callback_data_prefix=TELEGRAM_SETTINGS_CALLBACK_PREFIX,
+        )
+    )
+    async def on_settings_menu(self, event: AstrMessageEvent):
+        await self.settings_menu.handle_event(event)
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
+    async def on_settings_menu_input(self, event: AstrMessageEvent):
+        await self.settings_menu.handle_input_event(event)
+
+    def parse_subscription_url(
+        self,
+        value: str,
+        ctx: TelegramMenuContext,
+    ) -> str:
+        value = value.strip()
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Please enter a full http or https URL.")
+        return value
+
+    def save_subscription_url(
+        self,
+        value: str,
+        ctx: TelegramMenuContext,
+    ) -> None:
+        subscription_id = ctx.state["subscription_id"]
+        urls = dict(ctx.state.get("urls", {}))
+        urls[subscription_id] = value
+        ctx.state["urls"] = urls
+
+    async def render_settings_menu(self, ctx: TelegramMenuContext) -> TelegramMenuView:
+        subscriptions = [
+            {"id": "morning", "title": "Morning AI digest"},
+            {"id": "pixiv", "title": "New Pixiv follows"},
+        ]
+
+        if ctx.action.startswith("page:"):
+            ctx.replace({"page": "list", "page_index": int(ctx.action.split(":", 1)[1])})
+        elif ctx.action.startswith("open:"):
+            ctx.goto({"page": "detail", "subscription_id": ctx.action.split(":", 1)[1]})
+        elif ctx.action == "back":
+            ctx.back()
+        elif ctx.action == "edit_url":
+            ctx.prompt_input(
+                TelegramMenuInput(
+                    "subscription_url",
+                    "Send the new subscription URL. Send cancel to exit input.",
+                    placeholder="https://example.com/feed.xml",
+                    action="save_url",
+                    parse=self.parse_subscription_url,
+                    on_success=self.save_subscription_url,
+                    error_text=lambda error: f"Invalid URL: {error}",
+                )
+            )
+
+        if ctx.state["page"] == "detail":
+            subscription_id = ctx.state["subscription_id"]
+            current_url = ctx.state.get("urls", {}).get(subscription_id, "Not set")
+            return TelegramMenuView(
+                f"Subscription\n\nCurrent subscription: {subscription_id}\nURL: {current_url}",
+                rows=[
+                    [TelegramMenuButton("Status: enabled", "toggle_status")],
+                    [TelegramMenuButton("Edit URL", "edit_url")],
+                    [TelegramMenuButton("< Back", "back")],
+                ],
+            )
+
+        paginator = TelegramMenuPaginator(
+            subscriptions,
+            page=ctx.state.get("page_index", 0),
+            page_size=5,
+        )
+        rows = paginator.item_rows(
+            text=lambda item: item["title"],
+            action=lambda item: f"open:{item['id']}",
+        )
+        rows.append(paginator.navigation_row(previous_text="<", next_text=">"))
+        return TelegramMenuView("Choose the subscription to configure.", rows=rows)
+```
+
+If you do not need persistent menu state, omit `store` and the framework will use in-memory storage. Decorators usually cannot access `self.settings_menu.callback_data_prefix`, so define a fixed prefix constant for the menu namespace as shown above. `handle_input_event()` only consumes pending input from the same platform, session, and sender; after success or cancellation it calls `event.stop_event()` so the user input does not continue into normal chat handling or the LLM.
+
 The same filter entrypoint can also listen for Telegram inline/member events. Inline Mode uses standalone models that are only for `event.answer_inline_query(...)`; they are not `MessageChain` components and must not be placed in `event.chain_result(...)` chains. For these events, read the original Telegram `Update` object from `event.message_obj.raw_message`:
 
 ```python
