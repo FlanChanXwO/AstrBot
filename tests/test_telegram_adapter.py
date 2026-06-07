@@ -1,5 +1,6 @@
 import asyncio
 import importlib
+import inspect
 import sys
 from dataclasses import dataclass
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -982,6 +983,65 @@ async def test_telegram_explicit_media_group_supports_common_media_options(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_telegram_explicit_media_group_retries_remote_urls_as_uploads(
+    tmp_path,
+    monkeypatch,
+):
+    TelegramPlatformEvent = _load_telegram_platform_event()
+    components = _load_telegram_components()
+    client = MagicMock()
+    client.send_media_group = AsyncMock(
+        side_effect=[
+            MockTelegramBadRequest('Failed to send message #1: "webpage_curl_failed"'),
+            None,
+        ],
+    )
+    client.send_chat_action = AsyncMock()
+    first_path = tmp_path / "downloaded-1.jpg"
+    second_path = tmp_path / "downloaded-2.jpg"
+    first_path.write_bytes(b"\xff\xd8\xff one")
+    second_path.write_bytes(b"\xff\xd8\xff two")
+    downloads = {
+        "https://example.com/1.jpg": str(first_path),
+        "https://example.com/2.mp4": str(second_path),
+    }
+
+    async def fake_image_path(image):
+        return downloads[image.file]
+
+    async def fake_video_path(video):
+        return downloads[video.file]
+
+    monkeypatch.setattr(Comp.Image, "convert_to_file_path", fake_image_path)
+    monkeypatch.setattr(Comp.Video, "convert_to_file_path", fake_video_path)
+    message = MessageChain()
+    message.chain.append(
+        components.TelegramMediaGroup(
+            [
+                components.TelegramMediaGroup.photo("https://example.com/1.jpg"),
+                components.TelegramMediaGroup.video("https://example.com/2.mp4"),
+            ],
+        ),
+    )
+
+    await TelegramPlatformEvent.send_with_client(client, message, "123456")
+
+    assert client.send_media_group.await_count == 2
+    first_call = client.send_media_group.await_args_list[0].kwargs
+    second_call = client.send_media_group.await_args_list[1].kwargs
+    assert [item.media for item in first_call["media"]] == [
+        "https://example.com/1.jpg",
+        "https://example.com/2.mp4",
+    ]
+    uploaded_media = [item.media for item in second_call["media"]]
+    assert [media.filename for media in uploaded_media] == [
+        "downloaded-1.jpg",
+        "downloaded-2.jpg",
+    ]
+    assert all(media.attach is True for media in uploaded_media)
+
+
+@pytest.mark.asyncio
 async def test_telegram_caption_formats_explicit_media_group():
     TelegramPlatformEvent = _load_telegram_platform_event()
     components = _load_telegram_components()
@@ -1056,6 +1116,25 @@ async def test_telegram_explicit_media_group_supports_audio_without_record_mappi
     assert first.duration == 12
     assert first.caption == "audio album"
     assert second.performer == "Bob"
+
+
+def test_telegram_explicit_media_group_rejects_single_item():
+    components = _load_telegram_components()
+
+    with pytest.raises(ValueError, match="at least 2 media items"):
+        components.TelegramMediaGroup(
+            [components.TelegramMediaGroup.photo("https://example.com/one.jpg")],
+        )
+
+
+def test_telegram_real_ptb_edit_helpers_accept_inline_message_id():
+    from telegram import Bot
+
+    edit_text_params = inspect.signature(Bot.edit_message_text).parameters
+    edit_markup_params = inspect.signature(Bot.edit_message_reply_markup).parameters
+
+    assert "inline_message_id" in edit_text_params
+    assert "inline_message_id" in edit_markup_params
 
 
 @pytest.mark.asyncio
@@ -1239,7 +1318,12 @@ def test_telegram_components_expose_public_classification_api():
     media_group_item = components.TelegramMediaGroup.photo(
         "https://example.com/1.jpg",
     )
-    media_group = components.TelegramMediaGroup([media_group_item])
+    second_media_group_item = components.TelegramMediaGroup.photo(
+        "https://example.com/2.jpg",
+    )
+    media_group = components.TelegramMediaGroup(
+        [media_group_item, second_media_group_item]
+    )
 
     for component in (
         inline_button,
@@ -1251,6 +1335,7 @@ def test_telegram_components_expose_public_classification_api():
         telegram_text,
         telegram_caption,
         media_group_item,
+        second_media_group_item,
         media_group,
     ):
         assert isinstance(component, components.TelegramMessageComponent)
@@ -1404,6 +1489,44 @@ async def test_telegram_callback_query_is_converted_to_platform_event():
     assert (
         adapter.client.edit_message_reply_markup.await_args.kwargs["message_id"] == 99
     )
+
+
+@pytest.mark.asyncio
+async def test_telegram_inline_callback_query_edits_inline_message():
+    TelegramPlatformAdapter = _load_telegram_adapter()
+    adapter = TelegramPlatformAdapter(
+        make_platform_config("telegram"),
+        {},
+        asyncio.Queue(),
+    )
+    callback_query = MagicMock()
+    callback_query.id = "callback-id"
+    callback_query.data = "inline:edit"
+    callback_query.game_short_name = None
+    callback_query.from_user = _build_user(42, "alice")
+    callback_query.message = None
+    callback_query.inline_message_id = "inline-message-id"
+    callback_query.answer = AsyncMock()
+    update = MagicMock()
+    update.callback_query = callback_query
+
+    abm = await adapter.convert_callback_query(update, _build_context())
+
+    assert abm is not None
+    assert abm.message_id == ""
+    assert abm.session_id == "42"
+    event = await _commit_and_get_event(adapter, abm)
+    await event.edit_text("edited")
+    await event.edit_reply_markup(reply_markup=None)
+
+    edit_text_kwargs = adapter.client.edit_message_text.await_args.kwargs
+    assert edit_text_kwargs["inline_message_id"] == "inline-message-id"
+    assert "chat_id" not in edit_text_kwargs
+    assert "message_id" not in edit_text_kwargs
+    edit_markup_kwargs = adapter.client.edit_message_reply_markup.await_args.kwargs
+    assert edit_markup_kwargs["inline_message_id"] == "inline-message-id"
+    assert "chat_id" not in edit_markup_kwargs
+    assert "message_id" not in edit_markup_kwargs
 
 
 @pytest.mark.asyncio

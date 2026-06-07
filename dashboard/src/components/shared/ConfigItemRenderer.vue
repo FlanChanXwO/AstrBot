@@ -41,7 +41,7 @@
     </template>
     <template v-else-if="itemMeta?._special === 'select_plugin_set'">
       <PluginSetSelector
-        :model-value="modelValue"
+        :model-value="effectivePluginSetValue"
         :allow-none="itemMeta?._plugin_set_allow_none !== false"
         :empty-as-all="Boolean(itemMeta?._plugin_set_empty_as_all)"
         @update:model-value="emitUpdate"
@@ -125,7 +125,8 @@
       density="compact"
       variant="outlined"
       class="config-field"
-      hide-details
+      :rules="fieldRules"
+      :hide-details="fieldRules.length ? 'auto' : true"
     ></v-select>
 
     <div v-else-if="itemMeta?.editor_mode" class="editor-container">
@@ -151,7 +152,8 @@
       density="compact"
       variant="outlined"
       class="config-field"
-      hide-details
+      :rules="fieldRules"
+      :hide-details="fieldRules.length ? 'auto' : true"
     ></v-text-field>
 
     <div
@@ -179,7 +181,8 @@
         variant="outlined"
         class="config-field"
         type="number"
-        hide-details
+        :rules="fieldRules"
+        :hide-details="fieldRules.length ? 'auto' : true"
         style="flex: 1"
       ></v-text-field>
     </div>
@@ -191,7 +194,8 @@
       variant="outlined"
       rows="3"
       class="config-field"
-      hide-details
+      :rules="fieldRules"
+      :hide-details="fieldRules.length ? 'auto' : true"
     ></v-textarea>
 
     <v-switch
@@ -239,7 +243,8 @@
       density="compact"
       variant="outlined"
       class="config-field"
-      hide-details
+      :rules="fieldRules"
+      :hide-details="fieldRules.length ? 'auto' : true"
     ></v-text-field>
   </div>
 </template>
@@ -305,6 +310,50 @@ const { configText } = usePluginI18n()
 function emitUpdate(val) {
   emit('update:modelValue', val)
 }
+
+function cloneDefaultValue(value) {
+  if (Array.isArray(value)) {
+    return [...value]
+  }
+  if (value && typeof value === 'object') {
+    return JSON.parse(JSON.stringify(value))
+  }
+  return value
+}
+
+function hasExplicitDefault(itemMeta) {
+  return Object.prototype.hasOwnProperty.call(itemMeta || {}, 'default')
+}
+
+const effectivePluginSetValue = computed(() => {
+  if (
+    props.modelValue == null
+    && props.itemMeta?._special === 'select_plugin_set'
+    && hasExplicitDefault(props.itemMeta)
+    && Array.isArray(props.itemMeta.default)
+  ) {
+    return cloneDefaultValue(props.itemMeta.default)
+  }
+  return props.modelValue
+})
+
+const fieldRules = computed(() => {
+  if (!props.itemMeta?._required) {
+    return []
+  }
+  return [
+    value => {
+      if (value == null) return t('messages.validation.required')
+      if (typeof value === 'string') {
+        return value.trim() ? true : t('messages.validation.required')
+      }
+      if (Array.isArray(value)) {
+        return value.length > 0 ? true : t('messages.validation.required')
+      }
+      return true
+    }
+  ]
+})
 
 const listSelectItems = computed(() =>
   props.itemMeta?.type === 'list' && props.itemMeta?.options

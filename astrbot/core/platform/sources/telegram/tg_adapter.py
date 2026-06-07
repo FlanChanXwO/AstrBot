@@ -541,7 +541,7 @@ class TelegramPlatformAdapter(Platform):
             return
 
     async def register_commands(self) -> None:
-        """收集所有注册的指令并注册到 Telegram"""
+        """Collect registered commands and publish them to Telegram."""
         try:
             commands = self.collect_commands()
             if not commands:
@@ -579,7 +579,7 @@ class TelegramPlatformAdapter(Platform):
                 self.last_command_hashes[(scope_key, language_code)] = scoped_hash
 
         except Exception as e:
-            logger.error(f"向 Telegram 注册指令时发生错误: {e!s}")
+            logger.error(f"Failed to register Telegram commands: {e!s}")
 
     async def delete_registered_commands(self) -> None:
         for scope_config in self.command_scopes:
@@ -704,7 +704,7 @@ class TelegramPlatformAdapter(Platform):
         return bool(candidates & self.command_registered_plugins)
 
     def collect_commands(self) -> list[BotCommand]:
-        """从注册的处理器中收集所有指令"""
+        """Collect all bot commands from registered handlers."""
         command_dict = {}
         skip_commands = {"start"}
 
@@ -730,7 +730,8 @@ class TelegramPlatformAdapter(Platform):
                     for cmd_name, description in cmd_info_list:
                         if cmd_name in command_dict:
                             logger.warning(
-                                f"命令名 '{cmd_name}' 重复注册，将使用首次注册的定义: "
+                                f"Command name '{cmd_name}' is registered more than once; "
+                                "using the first definition: "
                                 f"'{command_dict[cmd_name]}'"
                             )
                         command_dict.setdefault(cmd_name, description)
@@ -744,7 +745,7 @@ class TelegramPlatformAdapter(Platform):
         handler_metadata,
         skip_commands: set,
     ) -> list[tuple[str, str]] | None:
-        """从事件过滤器中提取指令信息，包括所有别名"""
+        """Extract command metadata, including aliases, from an event filter."""
         cmd_names = []
         is_group = False
         if isinstance(event_filter, CommandFilter) and event_filter.command_name:
@@ -753,7 +754,6 @@ class TelegramPlatformAdapter(Platform):
                 and event_filter.parent_command_names != [""]
             ):
                 return None
-            # 收集主命令名和所有别名
             cmd_names = [event_filter.command_name]
             if event_filter.alias:
                 cmd_names.extend(event_filter.alias)
@@ -882,6 +882,10 @@ class TelegramPlatformAdapter(Platform):
 
         source_message = getattr(callback_query, "message", None)
         source_chat = getattr(source_message, "chat", None)
+        raw_inline_message_id = getattr(callback_query, "inline_message_id", None)
+        inline_message_id = (
+            raw_inline_message_id if isinstance(raw_inline_message_id, str) else ""
+        )
         data = getattr(callback_query, "data", None)
         game_short_name = getattr(callback_query, "game_short_name", None)
         message_text = str(data or game_short_name or "")
@@ -895,6 +899,8 @@ class TelegramPlatformAdapter(Platform):
             chat=source_chat,
             source_message=source_message,
         )
+        if inline_message_id:
+            message.telegram_inline_message_id = inline_message_id
         return self._mark_telegram_event(message, "callback_query", callback_query)
 
     async def convert_inline_query(
@@ -999,11 +1005,12 @@ class TelegramPlatformAdapter(Platform):
         context: ContextTypes.DEFAULT_TYPE,
         get_reply=True,
     ) -> AstrBotMessage | None:
-        """转换 Telegram 的消息对象为 AstrBotMessage 对象。
+        """Convert a Telegram message object into an AstrBotMessage.
 
-        @param update: Telegram 的 Update 对象。
-        @param context: Telegram 的 Context 对象。
-        @param get_reply: 是否获取回复消息。这个参数是为了防止多个回复嵌套。
+        @param update: Telegram Update object.
+        @param context: Telegram context object.
+        @param get_reply: Whether to fetch a replied message. This prevents nested
+            reply conversion.
         """
         if not update.message:
             logger.warning("Received an update without a message.")
@@ -1028,7 +1035,6 @@ class TelegramPlatformAdapter(Platform):
         message = AstrBotMessage()
         message.session_id = str(telegram_message.chat.id)
 
-        # 获得是群聊还是私聊
         if telegram_message.chat.type == ChatType.PRIVATE:
             message.type = MessageType.FRIEND_MESSAGE
         else:
@@ -1083,7 +1089,6 @@ class TelegramPlatformAdapter(Platform):
             and telegram_message.message_thread_id
             == telegram_message.reply_to_message.message_id
         ):
-            # 获取回复消息
             reply_update = Update(
                 update_id=1,
                 message=telegram_message.reply_to_message,
@@ -1105,7 +1110,6 @@ class TelegramPlatformAdapter(Platform):
                 )
 
         if telegram_message.text:
-            # 处理文本消息
             plain_text = telegram_message.text
             if (
                 message.type == MessageType.GROUP_MESSAGE
@@ -1117,7 +1121,6 @@ class TelegramPlatformAdapter(Platform):
                 plain_text2 = f"/@{context.bot.username} " + plain_text
                 plain_text = plain_text2
 
-            # 群聊场景命令特殊处理
             if plain_text.startswith("/"):
                 command_parts = plain_text.split(" ", 1)
                 if "@" in command_parts[0]:
@@ -1134,7 +1137,6 @@ class TelegramPlatformAdapter(Platform):
                             entity.offset + 1 : entity.offset + entity.length
                         ]
                         message.message.append(Comp.At(qq=name, name=name))
-                        # 如果mention是当前bot则移除；否则保留
                         if name.lower() == context.bot.username.lower():
                             plain_text = (
                                 plain_text[: entity.offset]
@@ -1173,7 +1175,6 @@ class TelegramPlatformAdapter(Platform):
             _apply_caption()
 
         elif telegram_message.sticker:
-            # 将sticker当作图片处理
             file = await telegram_message.sticker.get_file()
             message.message.append(Comp.Image(file=file.file_path, url=file.file_path))
             if telegram_message.sticker.emoji:
@@ -1427,6 +1428,12 @@ class TelegramPlatformAdapter(Platform):
                 "telegram_payload",
                 getattr(message, "telegram_payload", None),
             )
+            inline_message_id = getattr(message, "telegram_inline_message_id", "")
+            if inline_message_id:
+                message_event.set_extra(
+                    "telegram_inline_message_id",
+                    inline_message_id,
+                )
         if getattr(message, "telegram_skip_llm", False):
             message_event.should_call_llm(True)
         self.commit_event(message_event)

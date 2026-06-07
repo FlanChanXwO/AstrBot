@@ -871,6 +871,23 @@ class TestConfigMetadataI18n:
         assert telegram_default["telegram_command_registered_plugins"] == ["*"]
         assert command_scopes["type"] == "template_list"
         assert "chat_member" in command_scopes["templates"]
+        assert (
+            command_scopes["templates"]["chat"]["items"]["chat_id"]["_required"] is True
+        )
+        assert (
+            command_scopes["templates"]["chat_administrators"]["items"]["chat_id"][
+                "_required"
+            ]
+            is True
+        )
+        assert (
+            command_scopes["templates"]["chat_member"]["items"]["chat_id"]["_required"]
+            is True
+        )
+        assert (
+            command_scopes["templates"]["chat_member"]["items"]["user_id"]["_required"]
+            is True
+        )
         assert command_scopes["default"] == [
             {"__template_key": "default", "type": "default"}
         ]

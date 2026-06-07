@@ -148,7 +148,7 @@ async def review(self, event: AstrMessageEvent):
     )
     chain.chain.append(TelegramCaption("审批附件说明", parse_mode="HTML"))
     chain.chain.append(Image.fromURL("https://example.com/item/42.png"))
-    yield event.chain_result(chain)
+    yield event.chain_result(chain.chain)
 ```
 
 `TelegramText.parse_mode` 与 `TelegramCaption.parse_mode` 支持 `MarkdownV2`、`Markdown`、`HTML`，也可以传 `plaintext`、`plain` 或 `none` 发送纯文本。`TelegramText` 的链接预览字段对应 Telegram `LinkPreviewOptions`：是否禁用预览、预览 URL、小/大媒体偏好、是否显示在文本上方。
@@ -171,7 +171,7 @@ chain.chain.extend(
         Comp.Video.fromURL("https://example.com/demo.mp4"),
     ]
 )
-yield event.chain_result(chain)
+yield event.chain_result(chain.chain)
 ```
 
 自动 album 规则：
@@ -206,7 +206,7 @@ chain.chain.append(
         parse_mode="HTML",
     )
 )
-yield event.chain_result(chain)
+yield event.chain_result(chain.chain)
 ```
 
 `TelegramMediaGroup.audio(...)` 支持显式 audio album；这不会改变通用 `Record` 的 voice 语义。更细的 Telegram Bot API 参数仍建议通过 `event.get_telegram_client()` 直接调用 `python-telegram-bot`。
@@ -224,17 +224,17 @@ chain.chain.append(
         input_field_placeholder="请选择",
     )
 )
-yield event.chain_result(chain)
+yield event.chain_result(chain.chain)
 
 remove = MessageChain()
 remove.message("已取消")
 remove.chain.append(TelegramRemoveKeyboard(selective=True))
-yield event.chain_result(remove)
+yield event.chain_result(remove.chain)
 
 force = MessageChain()
 force.message("请回复审批理由")
 force.chain.append(TelegramForceReply(input_field_placeholder="理由"))
-yield event.chain_result(force)
+yield event.chain_result(force.chain)
 ```
 
 插件可以通过 Telegram 自定义过滤器监听按钮回调，实现审批、确认、翻页等交互。关键是使用 `@filter.custom_filter(telegram_event_filter(...))`，否则普通命令过滤器不会专门匹配 Telegram 的 callback/inline/member 类事件：

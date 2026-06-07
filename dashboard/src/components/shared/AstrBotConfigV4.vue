@@ -139,7 +139,10 @@ function getItemHint(itemKey, itemMeta) {
 }
 
 function pluginSetPreviewItems(itemKey, itemMeta) {
-  const value = createSelectorModel(itemKey).value || []
+  const currentValue = createSelectorModel(itemKey).value
+  const value = currentValue == null && Array.isArray(itemMeta?.default)
+    ? itemMeta.default
+    : (currentValue || [])
   if (value.length === 0 && itemMeta?._plugin_set_empty_as_all) {
     return ['*']
   }

@@ -888,6 +888,7 @@ CONFIG_METADATA_2 = {
                                         "description": "Chat ID",
                                         "type": "string",
                                         "hint": "Telegram chat_id，可填写数字 ID 或 @channelusername。",
+                                        "_required": True,
                                     },
                                     "language_code": {
                                         "description": "语言代码",
@@ -911,6 +912,7 @@ CONFIG_METADATA_2 = {
                                         "description": "Chat ID",
                                         "type": "string",
                                         "hint": "Telegram chat_id，可填写数字 ID 或 @channelusername。",
+                                        "_required": True,
                                     },
                                     "language_code": {
                                         "description": "语言代码",
@@ -934,11 +936,13 @@ CONFIG_METADATA_2 = {
                                         "description": "Chat ID",
                                         "type": "string",
                                         "hint": "Telegram chat_id，可填写数字 ID 或 @channelusername。",
+                                        "_required": True,
                                     },
                                     "user_id": {
                                         "description": "User ID",
                                         "type": "string",
                                         "hint": "Telegram 用户 ID。",
+                                        "_required": True,
                                     },
                                     "language_code": {
                                         "description": "语言代码",

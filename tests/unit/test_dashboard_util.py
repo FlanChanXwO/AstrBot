@@ -86,3 +86,32 @@ def test_validate_config_template_list_file_path_uses_template_schema_path():
 
     assert errors == []
     assert validated == data
+
+
+def test_validate_config_template_list_required_field_rejects_missing_or_empty_values():
+    schema = {
+        "telegram_command_scopes": {
+            "type": "template_list",
+            "templates": {
+                "chat": {
+                    "items": {
+                        "chat_id": {"type": "string", "_required": True},
+                        "language_code": {"type": "string"},
+                    },
+                },
+            },
+        },
+    }
+    data = {
+        "telegram_command_scopes": [
+            {"__template_key": "chat", "language_code": ""},
+            {"__template_key": "chat", "chat_id": "  "},
+        ],
+    }
+
+    errors, _ = validate_config(data, schema, is_core=False)
+
+    assert errors == [
+        "缺少必填配置 telegram_command_scopes.templates.chat.chat_id",
+        "缺少必填配置 telegram_command_scopes.templates.chat.chat_id",
+    ]

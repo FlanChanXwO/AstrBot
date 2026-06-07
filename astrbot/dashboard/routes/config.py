@@ -82,6 +82,16 @@ def _expect_type(value, expected_type, path_key, errors, expected_name=None) -> 
     return True
 
 
+def _is_required_value_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, list | dict):
+        return len(value) == 0
+    return False
+
+
 def _validate_template_list(value, meta, path_key, errors, validate_fn) -> None:
     if not _expect_type(value, list, path_key, errors, "list"):
         return
@@ -105,9 +115,18 @@ def _validate_template_list(value, meta, path_key, errors, validate_fn) -> None:
             errors.append(f"未知模板 {item_path}: {template_key}")
             continue
 
+        template_items = template_meta.get("items", {})
+        for key, item_meta in template_items.items():
+            if not item_meta.get("_required"):
+                continue
+            if key not in item:
+                errors.append(
+                    f"缺少必填配置 {path_key}.templates.{template_key}.{key}",
+                )
+
         validate_fn(
             item,
-            template_meta.get("items", {}),
+            template_items,
             path=f"{path_key}.templates.{template_key}.",
         )
 
@@ -122,6 +141,9 @@ def validate_config(data, schema: dict, is_core: bool) -> tuple[list[str], dict]
             meta = metadata[key]
             if "type" not in meta:
                 logger.debug(f"配置项 {path}{key} 没有类型定义, 跳过校验")
+                continue
+            if meta.get("_required") and _is_required_value_missing(value):
+                errors.append(f"缺少必填配置 {path}{key}")
                 continue
             # null 转换
             if value is None:

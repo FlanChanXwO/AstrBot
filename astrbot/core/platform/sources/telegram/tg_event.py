@@ -79,7 +79,7 @@ def _is_webpage_curl_failed_error(error: Exception) -> bool:
 
 
 class TelegramPlatformEvent(AstrMessageEvent):
-    # Telegram 的最大消息长度限制
+    # Telegram Bot API message text length limit.
     MAX_MESSAGE_LENGTH = 4096
 
     SPLIT_PATTERNS = {
@@ -89,13 +89,13 @@ class TelegramPlatformEvent(AstrMessageEvent):
         "word": re.compile(r"\s"),
     }
 
-    # sendMessageDraft 的 draft_id 类级递增计数器
+    # Class-level monotonic sendMessageDraft draft_id counter.
     _TELEGRAM_DRAFT_ID_MAX = 2_147_483_647
     _next_draft_id: int = 0
 
     @classmethod
     def _allocate_draft_id(cls) -> int:
-        """分配一个递增的 draft_id，溢出时归 1。"""
+        """Allocate an increasing draft_id and wrap to 1 on overflow."""
         cls._next_draft_id = (
             1
             if cls._next_draft_id >= cls._TELEGRAM_DRAFT_ID_MAX
@@ -103,7 +103,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         )
         return cls._next_draft_id
 
-    # 消息类型到 chat action 的映射，用于优先级判断
+    # Message component to chat action mapping, ordered by priority.
     ACTION_BY_TYPE: dict[type, str] = {
         Record: ChatAction.UPLOAD_VOICE,
         Video: ChatAction.UPLOAD_VIDEO,
@@ -216,6 +216,24 @@ class TelegramPlatformEvent(AstrMessageEvent):
             raise RuntimeError("Telegram event has no message_id.")
         return int(message_id)
 
+    def _current_inline_message_id(self) -> str:
+        callback_query = self._get_callback_query()
+        if callback_query is not None:
+            raw_inline_message_id = getattr(callback_query, "inline_message_id", None)
+            inline_message_id = (
+                raw_inline_message_id if isinstance(raw_inline_message_id, str) else ""
+            )
+            if inline_message_id:
+                return inline_message_id
+        return str(self.get_extra("telegram_inline_message_id", "") or "")
+
+    def _current_edit_reference(self) -> dict[str, Any]:
+        inline_message_id = self._current_inline_message_id()
+        if inline_message_id:
+            return {"inline_message_id": inline_message_id}
+        chat_id, _ = self._current_chat_reference()
+        return {"chat_id": chat_id, "message_id": self._current_message_id()}
+
     @staticmethod
     def _convert_reply_markup(reply_markup: Any) -> Any:
         if hasattr(reply_markup, "to_telegram_markup"):
@@ -277,7 +295,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         use_markdown: bool | None = None,
         parse_mode: str | None = None,
     ) -> None:
-        """按 Telegram 限制切分文本后逐段发送。"""
+        """Split text by Telegram limits and send each chunk."""
         normalized_parse_mode = cls._normalize_parse_mode(parse_mode)
         for chunk in cls._split_message(text):
             if normalized_parse_mode is not None:
@@ -323,18 +341,18 @@ class TelegramPlatformEvent(AstrMessageEvent):
         action: ChatAction | str,
         message_thread_id: str | None = None,
     ) -> None:
-        """发送聊天状态动作"""
+        """Send a Telegram chat action."""
         try:
             payload: dict[str, Any] = {"chat_id": chat_id, "action": action}
             if message_thread_id:
                 payload["message_thread_id"] = message_thread_id
             await client.send_chat_action(**payload)
         except Exception as e:
-            logger.warning(f"[Telegram] 发送 chat action 失败: {e}")
+            logger.warning(f"[Telegram] Failed to send chat action: {e}")
 
     @classmethod
     def _get_chat_action_for_chain(cls, chain: list[Any]) -> ChatAction | str:
-        """根据消息链中的组件类型确定合适的 chat action（按优先级）"""
+        """Choose the best chat action for a message chain by priority."""
         for seg_type, action in cls.ACTION_BY_TYPE.items():
             if any(isinstance(seg, seg_type) for seg in chain):
                 return action
@@ -351,7 +369,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         message_thread_id: str | None = None,
         **payload: Any,
     ) -> None:
-        """发送媒体时显示 upload action，发送完成后恢复 typing"""
+        """Show upload action while sending media, then restore typing."""
         effective_thread_id = message_thread_id or cast(
             str | None, payload.get("message_thread_id")
         )
@@ -437,7 +455,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         use_markdown: bool | None = None,
         parse_mode: str | None = None,
     ) -> dict[str, Any]:
-        """构造 Telegram caption 参数，遵守 Bot API 的 caption 长度限制。"""
+        """Build Telegram caption payload while enforcing Bot API caption length."""
         if caption is None:
             return {}
         if len(caption) > int(MessageLimit.CAPTION_LENGTH):
@@ -489,6 +507,22 @@ class TelegramPlatformEvent(AstrMessageEvent):
         if isinstance(media, File):
             return await media.get_file()
         if isinstance(media, str):
+            if _is_http_url(media):
+                match item.media_type:
+                    case "photo":
+                        return await Image.fromURL(media).convert_to_file_path()
+                    case "video":
+                        return await Video.fromURL(media).convert_to_file_path()
+                    case "document" | "audio":
+                        return await File(
+                            name=item.filename
+                            or os.path.basename(urlsplit(media).path),
+                            url=media,
+                        ).get_file()
+                    case _:
+                        raise ValueError(
+                            f"Unsupported Telegram media group item type: {item.media_type}"
+                        )
             if media.startswith("file://"):
                 path = media[7:]
                 if (
@@ -520,7 +554,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         *,
         filename: str | None = None,
     ) -> InputFile:
-        # Bot API media group 的本地文件必须走 multipart；让文件句柄活到 await 完成。
+        # Bot API media groups must keep multipart file handles open until send returns.
         file_handle = opened_files.enter_context(open(path, "rb"))
         return InputFile(
             file_handle,
@@ -1125,7 +1159,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         user_name: str,
         message_thread_id: str | None = None,
     ) -> None:
-        """确保显示 typing 状态"""
+        """Ensure the chat shows typing state."""
         await self._send_chat_action(
             self.client, user_name, ChatAction.TYPING, message_thread_id
         )
@@ -1167,7 +1201,6 @@ class TelegramPlatformEvent(AstrMessageEvent):
             # it's a supergroup chat with message_thread_id
             user_name, message_thread_id = user_name.split("#")
 
-        # 根据消息链确定合适的 chat action 并发送
         action = cls._get_chat_action_for_chain(chain)
         await cls._send_chat_action(client, user_name, action, message_thread_id)
 
@@ -1522,11 +1555,9 @@ class TelegramPlatformEvent(AstrMessageEvent):
         link_preview_options: Any = None,
         **kwargs: Any,
     ) -> Any:
-        chat_id, _ = self._current_chat_reference()
         return await self.client.edit_message_text(
             text=text,
-            chat_id=chat_id,
-            message_id=self._current_message_id(),
+            **self._current_edit_reference(),
             reply_markup=self._convert_reply_markup(reply_markup),
             parse_mode=parse_mode,
             link_preview_options=link_preview_options,
@@ -1538,10 +1569,8 @@ class TelegramPlatformEvent(AstrMessageEvent):
         reply_markup: TelegramInlineKeyboard | Any | None = None,
         **kwargs: Any,
     ) -> Any:
-        chat_id, _ = self._current_chat_reference()
         return await self.client.edit_message_reply_markup(
-            chat_id=chat_id,
-            message_id=self._current_message_id(),
+            **self._current_edit_reference(),
             reply_markup=self._convert_reply_markup(reply_markup),
             **kwargs,
         )
@@ -1603,13 +1632,13 @@ class TelegramPlatformEvent(AstrMessageEvent):
         )
 
     async def react(self, emoji: str | None, big: bool = False) -> None:
-        """给原消息添加 Telegram 反应：
-        - 普通 emoji：传入 '👍'、'😂' 等
-        - 自定义表情：传入其 custom_emoji_id（纯数字字符串）
-        - 取消本机器人的反应：传入 None 或空字符串
+        """Add or clear a Telegram reaction on the source message.
+
+        - Pass a standard emoji, such as '👍' or '😂'.
+        - Pass a numeric custom_emoji_id for custom emoji reactions.
+        - Pass None or an empty string to clear this bot's reaction.
         """
         try:
-            # 解析 chat_id（去掉超级群的 "#<thread_id>" 片段）
             if self.get_message_type() == MessageType.GROUP_MESSAGE:
                 chat_id = (self.message_obj.group_id or "").split("#")[0]
             else:
@@ -1617,22 +1646,21 @@ class TelegramPlatformEvent(AstrMessageEvent):
 
             message_id = int(self.message_obj.message_id)
 
-            # 组装 reaction 参数（必须是 ReactionType 的列表）
-            if not emoji:  # 清空本 bot 的反应
-                reaction_param = []  # 空列表表示移除本 bot 的反应
-            elif emoji.isdigit():  # 自定义表情：传 custom_emoji_id
+            if not emoji:
+                reaction_param = []
+            elif emoji.isdigit():
                 reaction_param = [ReactionTypeCustomEmoji(emoji)]
-            else:  # 普通 emoji
+            else:
                 reaction_param = [ReactionTypeEmoji(emoji)]
 
             await self.client.set_message_reaction(
                 chat_id=chat_id,
                 message_id=message_id,
-                reaction=reaction_param,  # 注意是列表
-                is_big=big,  # 可选：大动画
+                reaction=reaction_param,
+                is_big=big,
             )
         except Exception as e:
-            logger.error(f"[Telegram] 添加反应失败: {e}")
+            logger.error(f"[Telegram] Failed to update message reaction: {e}")
 
     async def _send_message_draft(
         self,
@@ -1642,16 +1670,16 @@ class TelegramPlatformEvent(AstrMessageEvent):
         message_thread_id: str | None = None,
         parse_mode: str | None = None,
     ) -> None:
-        """通过 Bot.send_message_draft 发送草稿消息（流式推送部分消息）。
+        """Send a draft message through Bot.send_message_draft for streaming.
 
-        该 API 仅支持私聊。
+        This API only supports private chats.
 
         Args:
-            chat_id: 目标私聊的 chat_id
-            draft_id: 草稿唯一标识，非零整数；相同 draft_id 的变更会以动画展示
-            text: 消息文本，1-4096 字符
-            message_thread_id: 可选，目标消息线程 ID
-            parse_mode: 可选，消息文本的解析模式
+            chat_id: Target private chat_id.
+            draft_id: Unique non-zero draft id; updates with the same draft_id are animated.
+            text: Message text, 1-4096 characters.
+            message_thread_id: Optional target message thread ID.
+            parse_mode: Optional message text parse mode.
         """
         if not text or not text.strip():
             return
@@ -1673,7 +1701,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 **kwargs,
             )
         except Exception as e:
-            logger.warning(f"[Telegram] sendMessageDraft 失败: {e!s}")
+            logger.warning(f"[Telegram] sendMessageDraft failed: {e!s}")
 
     async def _process_chain_items(
         self,
@@ -1683,7 +1711,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         message_thread_id: str | None,
         on_text: Callable[[str], None],
     ) -> None:
-        """处理 MessageChain 中的各类组件，文本通过 on_text 回调追加，媒体直接发送。"""
+        """Process MessageChain components, appending text and sending media directly."""
         for i in chain.chain:
             if isinstance(i, Plain):
                 on_text(i.text)
@@ -1739,10 +1767,10 @@ class TelegramPlatformEvent(AstrMessageEvent):
                     **cast(Any, payload),
                 )
             else:
-                logger.warning(f"不支持的消息类型: {type(i)}")
+                logger.warning(f"Unsupported message component type: {type(i)}")
 
     async def _send_final_segment(self, delta: str, payload: dict[str, Any]) -> None:
-        """将累积文本作为 MarkdownV2 真实消息发送，失败时回退到纯文本。"""
+        """Send accumulated text as a real message with Markdown fallback."""
         await self._send_text_chunks(self.client, delta, payload)
 
     async def send_streaming(self, generator, use_fallback: bool = False):
@@ -1762,21 +1790,23 @@ class TelegramPlatformEvent(AstrMessageEvent):
         if message_thread_id:
             payload["message_thread_id"] = message_thread_id
 
-        # sendMessageDraft 仅支持私聊（显式检查 FRIEND_MESSAGE）
         is_private = self.get_message_type() == MessageType.FRIEND_MESSAGE
 
         if is_private:
-            logger.info("[Telegram] 流式输出: 使用 sendMessageDraft (私聊)")
+            logger.info(
+                "[Telegram] Streaming output: using sendMessageDraft (private chat)"
+            )
             await self._send_streaming_draft(
                 user_name, message_thread_id, payload, generator
             )
         else:
-            logger.info("[Telegram] 流式输出: 使用 edit_message_text fallback (群聊)")
+            logger.info(
+                "[Telegram] Streaming output: using edit_message_text fallback (group chat)"
+            )
             await self._send_streaming_edit(
                 user_name, message_thread_id, payload, generator
             )
 
-        # 内联父类 send_streaming 的副作用（避免传入已消费的 generator）
         asyncio.create_task(
             Metric.upload(msg_event_tick=1, adapter_name=self.platform_meta.name),
         )
@@ -1789,26 +1819,25 @@ class TelegramPlatformEvent(AstrMessageEvent):
         payload: dict[str, Any],
         generator,
     ) -> None:
-        """使用 sendMessageDraft API 进行流式推送（私聊专用）。
+        """Stream through sendMessageDraft in private chats.
 
-        流式过程中使用 sendMessageDraft 推送草稿动画，
-        流式结束后发送一条真实消息保留最终内容（draft 是临时的，会消失）。
-        使用信号驱动的发送循环：每次有新 token 到达时唤醒发送，
-        发送频率由网络 RTT 自然限制（最多一个请求 in-flight）。
+        During streaming, sendMessageDraft pushes draft animations. At the end,
+        a real message keeps the final content because drafts are temporary.
+        The send loop is signal-driven: each new token wakes the sender, and the
+        network RTT naturally limits the rate to at most one request in flight.
         """
         draft_id = self._allocate_draft_id()
         delta = ""
         last_sent_text = ""
-        done = False  # 信号：生成器已结束
-        text_changed = asyncio.Event()  # 有新 token 到达时触发
+        done = False
+        text_changed = asyncio.Event()
 
         async def _draft_sender_loop() -> None:
-            """信号驱动的草稿发送循环，有新内容就发，RTT 自然限流。"""
+            """Send drafts when content changes; RTT naturally throttles requests."""
             nonlocal last_sent_text
             while not done:
                 await text_changed.wait()
                 text_changed.clear()
-                # 发送最新的缓冲区内容（MarkdownV2 渲染，与真实消息一致）
                 if delta and delta != last_sent_text:
                     draft_text = delta[: self.MAX_MESSAGE_LENGTH]
                     if draft_text != last_sent_text:
@@ -1825,7 +1854,6 @@ class TelegramPlatformEvent(AstrMessageEvent):
                             )
                             last_sent_text = draft_text
                         except Exception:
-                            # markdownify 对未闭合语法可能失败，回退纯文本
                             try:
                                 await self._send_message_draft(
                                     user_name,
@@ -1844,7 +1872,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         def _append_text(t: str) -> None:
             nonlocal delta
             delta += t
-            text_changed.set()  # 唤醒发送循环
+            text_changed.set()
 
         try:
             async for chain in generator:
@@ -1852,9 +1880,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
                     continue
 
                 if chain.type == "break":
-                    # 分割符：发送真实消息保留内容，重置缓冲区
                     if delta:
-                        # 用 emoji 清空 draft 显示，避免 draft 和真实消息同时可见
                         await self._send_message_draft(
                             user_name,
                             draft_id,
@@ -1872,10 +1898,9 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 )
         finally:
             done = True
-            text_changed.set()  # 唤醒循环使其退出
+            text_changed.set()
             await sender_task
 
-        # 流式结束：用 emoji 清空 draft，然后发真实消息持久化
         if delta:
             await self._send_message_draft(
                 user_name,
@@ -1892,16 +1917,15 @@ class TelegramPlatformEvent(AstrMessageEvent):
         payload: dict[str, Any],
         generator,
     ) -> None:
-        """使用 send_message + edit_message_text 进行流式推送（群聊 fallback）。"""
+        """Stream with send_message plus edit_message_text as the group-chat fallback."""
         delta = ""
         current_content = ""
         message_id = None
-        last_edit_time = 0  # 上次编辑消息的时间
-        throttle_interval = 0.6  # 编辑消息的间隔时间 (秒)
-        last_chat_action_time = 0  # 上次发送 chat action 的时间
-        chat_action_interval = 0.5  # chat action 的节流间隔 (秒)
+        last_edit_time = 0
+        throttle_interval = 0.6
+        last_chat_action_time = 0
+        chat_action_interval = 0.5
 
-        # 发送初始 typing 状态
         await self._ensure_typing(user_name, message_thread_id)
         last_chat_action_time = asyncio.get_running_loop().time()
 
@@ -1914,7 +1938,6 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 continue
 
             if chain.type == "break":
-                # 分割符
                 if message_id:
                     try:
                         await self.client.edit_message_text(
@@ -1923,7 +1946,9 @@ class TelegramPlatformEvent(AstrMessageEvent):
                             message_id=message_id,
                         )
                     except Exception as e:
-                        logger.warning(f"编辑消息失败(streaming-break): {e!s}")
+                        logger.warning(
+                            f"Failed to edit message (streaming-break): {e!s}"
+                        )
                 message_id = None
                 delta = ""
                 continue
@@ -1932,7 +1957,6 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 chain, payload, user_name, message_thread_id, _append_text
             )
 
-            # 编辑或发送消息
             if message_id and len(delta) <= self.MAX_MESSAGE_LENGTH:
                 current_time = asyncio.get_running_loop().time()
                 time_since_last_edit = current_time - last_edit_time
@@ -1950,7 +1974,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
                         )
                         current_content = delta
                     except Exception as e:
-                        logger.warning(f"编辑消息失败(streaming): {e!s}")
+                        logger.warning(f"Failed to edit message (streaming): {e!s}")
                     last_edit_time = asyncio.get_running_loop().time()
             else:
                 current_time = asyncio.get_running_loop().time()
@@ -1963,7 +1987,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
                     )
                     current_content = delta
                 except Exception as e:
-                    logger.warning(f"发送消息失败(streaming): {e!s}")
+                    logger.warning(f"Failed to send message (streaming): {e!s}")
                 message_id = msg.message_id
                 last_edit_time = asyncio.get_running_loop().time()
 
@@ -1980,11 +2004,13 @@ class TelegramPlatformEvent(AstrMessageEvent):
                         parse_mode="MarkdownV2",
                     )
                 except Exception as e:
-                    logger.warning(f"Markdown转换失败，使用普通文本: {e!s}")
+                    logger.warning(
+                        f"Failed to convert Markdown; using plain text: {e!s}"
+                    )
                     await self.client.edit_message_text(
                         text=delta,
                         chat_id=payload["chat_id"],
                         message_id=message_id,
                     )
         except Exception as e:
-            logger.warning(f"编辑消息失败(streaming): {e!s}")
+            logger.warning(f"Failed to edit message (streaming): {e!s}")

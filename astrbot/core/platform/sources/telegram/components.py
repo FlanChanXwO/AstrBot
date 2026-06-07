@@ -499,8 +499,8 @@ class TelegramMediaGroup(TelegramMediaGroupComponent):
         caption: str | None = None,
         parse_mode: str | None = None,
     ) -> None:
-        if not items:
-            raise ValueError("TelegramMediaGroup requires at least one media item.")
+        if len(items) < 2:
+            raise ValueError("TelegramMediaGroup requires at least 2 media items.")
         super().__init__(items=items, caption=caption, parse_mode=parse_mode)
 
     @staticmethod

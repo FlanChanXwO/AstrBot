@@ -148,7 +148,7 @@ async def review(self, event: AstrMessageEvent):
     )
     chain.chain.append(TelegramCaption("Attachment caption", parse_mode="HTML"))
     chain.chain.append(Image.fromURL("https://example.com/item/42.png"))
-    yield event.chain_result(chain)
+    yield event.chain_result(chain.chain)
 ```
 
 `TelegramText.parse_mode` and `TelegramCaption.parse_mode` support `MarkdownV2`, `Markdown`, and `HTML`. You can also pass `plaintext`, `plain`, or `none` to send plain text. `TelegramText` link preview fields map to Telegram `LinkPreviewOptions`: disabled state, preview URL, small/large media preference, and whether the preview is shown above the text.
@@ -171,7 +171,7 @@ chain.chain.extend(
         Comp.Video.fromURL("https://example.com/demo.mp4"),
     ]
 )
-yield event.chain_result(chain)
+yield event.chain_result(chain.chain)
 ```
 
 Automatic album rules:
@@ -206,7 +206,7 @@ chain.chain.append(
         parse_mode="HTML",
     )
 )
-yield event.chain_result(chain)
+yield event.chain_result(chain.chain)
 ```
 
 `TelegramMediaGroup.audio(...)` supports explicit audio albums without changing the generic `Record` voice-message meaning. For more detailed Telegram Bot API parameters, use `event.get_telegram_client()` and call `python-telegram-bot` directly.
@@ -224,17 +224,17 @@ chain.chain.append(
         input_field_placeholder="Choose",
     )
 )
-yield event.chain_result(chain)
+yield event.chain_result(chain.chain)
 
 remove = MessageChain()
 remove.message("Cancelled")
 remove.chain.append(TelegramRemoveKeyboard(selective=True))
-yield event.chain_result(remove)
+yield event.chain_result(remove.chain)
 
 force = MessageChain()
 force.message("Please reply with the approval reason")
 force.chain.append(TelegramForceReply(input_field_placeholder="Reason"))
-yield event.chain_result(force)
+yield event.chain_result(force.chain)
 ```
 
 Plugins can listen for button callbacks with the Telegram custom filter to build approval, confirmation, pagination, and similar flows. The important part is `@filter.custom_filter(telegram_event_filter(...))`; regular command filters do not specifically match Telegram callback/inline/member events:
