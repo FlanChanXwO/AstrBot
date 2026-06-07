@@ -1,4 +1,5 @@
-from typing import Any
+from abc import ABC, abstractmethod
+from typing import Any, Protocol, runtime_checkable
 
 from telegram import (
     CallbackGame,
@@ -6,28 +7,6 @@ from telegram import (
     ForceReply,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InlineQueryResultArticle,
-    InlineQueryResultAudio,
-    InlineQueryResultCachedAudio,
-    InlineQueryResultCachedDocument,
-    InlineQueryResultCachedGif,
-    InlineQueryResultCachedMpeg4Gif,
-    InlineQueryResultCachedPhoto,
-    InlineQueryResultCachedSticker,
-    InlineQueryResultCachedVideo,
-    InlineQueryResultCachedVoice,
-    InlineQueryResultContact,
-    InlineQueryResultDocument,
-    InlineQueryResultGame,
-    InlineQueryResultGif,
-    InlineQueryResultLocation,
-    InlineQueryResultMpeg4Gif,
-    InlineQueryResultPhoto,
-    InlineQueryResultsButton,
-    InlineQueryResultVenue,
-    InlineQueryResultVideo,
-    InlineQueryResultVoice,
-    InputTextMessageContent,
     KeyboardButton,
     LinkPreviewOptions,
     LoginUrl,
@@ -41,31 +20,81 @@ from astrbot.api.message_components import BaseMessageComponent
 
 TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64
 
-TELEGRAM_INLINE_QUERY_RESULT_TYPES: dict[str, type] = {
-    "article": InlineQueryResultArticle,
-    "audio": InlineQueryResultAudio,
-    "cached_audio": InlineQueryResultCachedAudio,
-    "cached_document": InlineQueryResultCachedDocument,
-    "cached_gif": InlineQueryResultCachedGif,
-    "cached_mpeg4_gif": InlineQueryResultCachedMpeg4Gif,
-    "cached_photo": InlineQueryResultCachedPhoto,
-    "cached_sticker": InlineQueryResultCachedSticker,
-    "cached_video": InlineQueryResultCachedVideo,
-    "cached_voice": InlineQueryResultCachedVoice,
-    "contact": InlineQueryResultContact,
-    "document": InlineQueryResultDocument,
-    "game": InlineQueryResultGame,
-    "gif": InlineQueryResultGif,
-    "location": InlineQueryResultLocation,
-    "mpeg4_gif": InlineQueryResultMpeg4Gif,
-    "photo": InlineQueryResultPhoto,
-    "venue": InlineQueryResultVenue,
-    "video": InlineQueryResultVideo,
-    "voice": InlineQueryResultVoice,
-}
+
+class TelegramMessageComponent(BaseMessageComponent, ABC):
+    """Base class for Telegram-specific MessageChain components."""
 
 
-class TelegramInlineButton(BaseMessageComponent):
+class TelegramButtonComponent(TelegramMessageComponent):
+    """Base class for Telegram button components."""
+
+    @abstractmethod
+    def to_telegram_button(self) -> Any: ...
+
+
+class TelegramReplyMarkupComponent(TelegramMessageComponent):
+    """Base class for Telegram reply_markup components."""
+
+    @abstractmethod
+    def to_telegram_markup(self) -> Any: ...
+
+
+class TelegramTextComponent(TelegramMessageComponent):
+    """Base class for Telegram text-like components."""
+
+
+class TelegramMediaGroupComponent(TelegramMessageComponent):
+    """Base class for Telegram explicit media group components."""
+
+
+@runtime_checkable
+class SupportsTelegramButton(Protocol):
+    """Object that can be converted to a Telegram button."""
+
+    def to_telegram_button(self) -> Any: ...
+
+
+@runtime_checkable
+class SupportsTelegramMarkup(Protocol):
+    """Object that can be converted to Telegram reply markup."""
+
+    def to_telegram_markup(self) -> Any: ...
+
+
+def build_link_preview_options(
+    *,
+    link_preview_options: Any = None,
+    link_preview_is_disabled: bool | None = None,
+    link_preview_url: str | None = None,
+    link_preview_prefer_small_media: bool | None = None,
+    link_preview_prefer_large_media: bool | None = None,
+    link_preview_show_above_text: bool | None = None,
+) -> Any:
+    """Build PTB LinkPreviewOptions from Telegram text fields."""
+    if link_preview_options is not None:
+        return link_preview_options
+    if not any(
+        value is not None
+        for value in (
+            link_preview_is_disabled,
+            link_preview_url,
+            link_preview_prefer_small_media,
+            link_preview_prefer_large_media,
+            link_preview_show_above_text,
+        )
+    ):
+        return None
+
+    return LinkPreviewOptions(
+        is_disabled=link_preview_is_disabled,
+        url=link_preview_url,
+        prefer_small_media=link_preview_prefer_small_media,
+        prefer_large_media=link_preview_prefer_large_media,
+        show_above_text=link_preview_show_above_text,
+    )
+
+
+class TelegramInlineButton(TelegramButtonComponent):
     """Telegram inline keyboard button component."""
 
     type: str = "telegram_inline_button"
@@ -182,7 +211,7 @@ class TelegramInlineButton(BaseMessageComponent):
         )
 
 
-class TelegramInlineKeyboard(BaseMessageComponent):
+class TelegramInlineKeyboard(TelegramReplyMarkupComponent):
     """Telegram inline keyboard component."""
 
     type: str = "telegram_inline_keyboard"
@@ -190,7 +219,7 @@ class TelegramInlineKeyboard(BaseMessageComponent):
 
     def __init__(
         self,
-        rows: list[list[TelegramInlineButton | InlineKeyboardButton]],
+        rows: list[list[SupportsTelegramButton | InlineKeyboardButton]],
     ) -> None:
         super().__init__(rows=rows)
 
@@ -200,7 +229,7 @@ class TelegramInlineKeyboard(BaseMessageComponent):
             keyboard.append(
                 [
                     button.to_telegram_button()
-                    if isinstance(button, TelegramInlineButton)
+                    if isinstance(button, SupportsTelegramButton)
                     else button
                     for button in row
                 ],
@@ -208,7 +237,7 @@ class TelegramInlineKeyboard(BaseMessageComponent):
         return InlineKeyboardMarkup(keyboard)
 
 
-class TelegramKeyboardButton(BaseMessageComponent):
+class TelegramKeyboardButton(TelegramButtonComponent):
     """Telegram reply-keyboard button component."""
 
     type: str = "telegram_keyboard_button"
@@ -264,109 +293,7 @@ class TelegramKeyboardButton(BaseMessageComponent):
         )
 
 
-class TelegramInputTextMessageContent(BaseMessageComponent):
-    """Telegram inline-query text message content component."""
-
-    type: str = "telegram_input_text_message_content"
-    message_text: str
-    parse_mode: str | None = None
-    entities: Any = None
-    link_preview_options: Any = None
-    disable_web_page_preview: bool | None = None
-    api_kwargs: dict[str, Any] | None = None
-
-    def __init__(
-        self,
-        message_text: str,
-        *,
-        parse_mode: str | None = None,
-        entities: Any = None,
-        link_preview_options: Any = None,
-        disable_web_page_preview: bool | None = None,
-        api_kwargs: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(
-            message_text=message_text,
-            parse_mode=parse_mode,
-            entities=entities,
-            link_preview_options=link_preview_options,
-            disable_web_page_preview=disable_web_page_preview,
-            api_kwargs=api_kwargs,
-        )
-
-    def to_telegram_content(self) -> InputTextMessageContent:
-        return InputTextMessageContent(
-            message_text=self.message_text,
-            parse_mode=self.parse_mode,
-            entities=self.entities,
-            link_preview_options=self.link_preview_options,
-            disable_web_page_preview=self.disable_web_page_preview,
-            api_kwargs=self.api_kwargs,
-        )
-
-
-class TelegramInlineQueryResult(BaseMessageComponent):
-    """Telegram inline-query result component.
-
-    ``result_type`` accepts every Bot API inline result type supported by
-    python-telegram-bot 22.6+: article, audio, cached_audio, cached_document,
-    cached_gif, cached_mpeg4_gif, cached_photo, cached_sticker, cached_video,
-    cached_voice, contact, document, game, gif, location, mpeg4_gif, photo,
-    venue, video, and voice.
-    """
-
-    type: str = "telegram_inline_query_result"
-    result_type: str
-    payload: dict[str, Any]
-
-    def __init__(self, result_type: str, **payload: Any) -> None:
-        super().__init__(result_type=result_type, payload=payload)
-
-    def to_telegram_result(self):
-        result_type = self.result_type.strip().lower()
-        result_class = TELEGRAM_INLINE_QUERY_RESULT_TYPES.get(result_type)
-        if result_class is None:
-            supported = ", ".join(sorted(TELEGRAM_INLINE_QUERY_RESULT_TYPES))
-            raise ValueError(
-                f"Unsupported Telegram inline query result type: {self.result_type}. "
-                f"Supported types: {supported}.",
-            )
-        return result_class(**_convert_telegram_payload(self.payload))
-
-
-class TelegramInlineQueryResultsButton(BaseMessageComponent):
-    """Telegram inline-query answer button component."""
-
-    type: str = "telegram_inline_query_results_button"
-    text: str
-    web_app: Any = None
-    start_parameter: str | None = None
-
-    def __init__(
-        self,
-        text: str,
-        *,
-        web_app: WebAppInfo | str | None = None,
-        start_parameter: str | None = None,
-    ) -> None:
-        super().__init__(
-            text=text,
-            web_app=web_app,
-            start_parameter=start_parameter,
-        )
-
-    def to_telegram_button(self) -> InlineQueryResultsButton:
-        web_app = (
-            WebAppInfo(self.web_app) if isinstance(self.web_app, str) else self.web_app
-        )
-        return InlineQueryResultsButton(
-            text=self.text,
-            web_app=web_app,
-            start_parameter=self.start_parameter,
-        )
-
-
-class TelegramReplyKeyboard(BaseMessageComponent):
+class TelegramReplyKeyboard(TelegramReplyMarkupComponent):
     """Telegram custom reply keyboard component."""
 
     type: str = "telegram_reply_keyboard"
@@ -379,7 +306,7 @@ class TelegramReplyKeyboard(BaseMessageComponent):
 
     def __init__(
         self,
-        rows: list[list[str | TelegramKeyboardButton | KeyboardButton]],
+        rows: list[list[str | SupportsTelegramButton | KeyboardButton]],
         *,
         resize_keyboard: bool | None = None,
         one_time_keyboard: bool | None = None,
@@ -402,7 +329,7 @@ class TelegramReplyKeyboard(BaseMessageComponent):
             keyboard.append(
                 [
                     button.to_telegram_button()
-                    if isinstance(button, TelegramKeyboardButton)
+                    if isinstance(button, SupportsTelegramButton)
                     else button
                     for button in row
                 ],
@@ -417,7 +344,7 @@ class TelegramReplyKeyboard(BaseMessageComponent):
         )
 
 
-class TelegramRemoveKeyboard(BaseMessageComponent):
+class TelegramRemoveKeyboard(TelegramReplyMarkupComponent):
     """Telegram reply-keyboard removal component."""
 
     type: str = "telegram_remove_keyboard"
@@ -430,7 +357,7 @@ class TelegramRemoveKeyboard(BaseMessageComponent):
         return ReplyKeyboardRemove(selective=self.selective)
 
 
-class TelegramForceReply(BaseMessageComponent):
+class TelegramForceReply(TelegramReplyMarkupComponent):
     """Telegram force-reply prompt component."""
 
     type: str = "telegram_force_reply"
@@ -455,11 +382,13 @@ class TelegramForceReply(BaseMessageComponent):
         )
 
 
-class TelegramMessageOptions(BaseMessageComponent):
-    """Telegram send options for text rendering and link previews."""
+class TelegramText(TelegramTextComponent):
+    """Visible Telegram text message with Bot API text rendering options."""
 
-    type: str = "telegram_message_options"
+    type: str = "telegram_text"
+    text: str
     parse_mode: str | None = None
+    link_preview_options: Any = None
     link_preview_is_disabled: bool | None = None
     link_preview_url: str | None = None
     link_preview_prefer_small_media: bool | None = None
@@ -468,8 +397,10 @@ class TelegramMessageOptions(BaseMessageComponent):
 
     def __init__(
         self,
+        text: str,
         *,
         parse_mode: str | None = None,
+        link_preview_options: Any = None,
         link_preview_is_disabled: bool | None = None,
         link_preview_url: str | None = None,
         link_preview_prefer_small_media: bool | None = None,
@@ -477,7 +408,9 @@ class TelegramMessageOptions(BaseMessageComponent):
         link_preview_show_above_text: bool | None = None,
     ) -> None:
         super().__init__(
+            text=text,
             parse_mode=parse_mode,
+            link_preview_options=link_preview_options,
             link_preview_is_disabled=link_preview_is_disabled,
             link_preview_url=link_preview_url,
             link_preview_prefer_small_media=link_preview_prefer_small_media,
@@ -485,29 +418,22 @@ class TelegramMessageOptions(BaseMessageComponent):
             link_preview_show_above_text=link_preview_show_above_text,
         )
 
-    def to_link_preview_options(self) -> LinkPreviewOptions | None:
-        if not any(
-            value is not None
-            for value in (
-                self.link_preview_is_disabled,
-                self.link_preview_url,
-                self.link_preview_prefer_small_media,
-                self.link_preview_prefer_large_media,
-                self.link_preview_show_above_text,
-            )
-        ):
-            return None
 
-        return LinkPreviewOptions(
-            is_disabled=self.link_preview_is_disabled,
-            url=self.link_preview_url,
-            prefer_small_media=self.link_preview_prefer_small_media,
-            prefer_large_media=self.link_preview_prefer_large_media,
-            show_above_text=self.link_preview_show_above_text,
+class TelegramCaption(TelegramTextComponent):
+    """Visible Telegram media caption for the next captionable media segment."""
+
+    type: str = "telegram_caption"
+    text: str
+    parse_mode: str | None = None
+
+    def __init__(self, text: str, *, parse_mode: str | None = None) -> None:
+        super().__init__(
+            text=text,
+            parse_mode=parse_mode,
         )
 
 
-class TelegramMediaGroupItem(BaseMessageComponent):
+class TelegramMediaGroupItem(TelegramMediaGroupComponent):
     """Telegram media group item for explicit album sending."""
 
     type: str = "telegram_media_group_item"
@@ -558,7 +484,7 @@ class TelegramMediaGroupItem(BaseMessageComponent):
         )
 
 
-class TelegramMediaGroup(BaseMessageComponent):
+class TelegramMediaGroup(TelegramMediaGroupComponent):
     """Explicit Telegram album component with common InputMedia options."""
 
     type: str = "telegram_media_group"
@@ -648,21 +574,3 @@ class TelegramMediaGroup(BaseMessageComponent):
             performer=performer,
             title=title,
         )
-
-
-def _convert_telegram_payload(value: Any) -> Any:
-    if isinstance(value, TelegramInlineKeyboard):
-        return value.to_telegram_markup()
-    if isinstance(value, TelegramInputTextMessageContent):
-        return value.to_telegram_content()
-    if isinstance(value, TelegramInlineQueryResultsButton):
-        return value.to_telegram_button()
-    if isinstance(value, TelegramInlineQueryResult):
-        return value.to_telegram_result()
-    if isinstance(value, list):
-        return [_convert_telegram_payload(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_convert_telegram_payload(item) for item in value)
-    if isinstance(value, dict):
-        return {key: _convert_telegram_payload(item) for key, item in value.items()}
-    return value

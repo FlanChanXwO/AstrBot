@@ -48,11 +48,13 @@ def _load_telegram_module(module_name: str):
 
     components_module_name = "astrbot.core.platform.sources.telegram.components"
     filters_module_name = "astrbot.core.platform.sources.telegram.filters"
+    inline_module_name = "astrbot.core.platform.sources.telegram.inline"
     with patch.dict(sys.modules, _build_telegram_patched_modules()):
         sys.modules.pop(module_name, None)
         module = importlib.import_module(module_name)
         components_module = sys.modules.get(components_module_name)
         filters_module = sys.modules.get(filters_module_name)
+        inline_module = sys.modules.get(inline_module_name)
 
     sys.modules[module_name] = module
     _TELEGRAM_MODULES[module_name] = module
@@ -62,6 +64,9 @@ def _load_telegram_module(module_name: str):
     if filters_module is not None:
         sys.modules[filters_module_name] = filters_module
         _TELEGRAM_MODULES[filters_module_name] = filters_module
+    if inline_module is not None:
+        sys.modules[inline_module_name] = inline_module
+        _TELEGRAM_MODULES[inline_module_name] = inline_module
     return module
 
 
@@ -88,6 +93,11 @@ def _load_telegram_platform_event():
 def _load_telegram_components():
     _load_telegram_platform_event()
     return _TELEGRAM_MODULES["astrbot.core.platform.sources.telegram.components"]
+
+
+def _load_telegram_inline():
+    _load_telegram_platform_event()
+    return _TELEGRAM_MODULES["astrbot.core.platform.sources.telegram.inline"]
 
 
 def _load_telegram_filters():
@@ -430,16 +440,16 @@ async def test_telegram_run_rebuilds_fresh_application_after_recreate_init_failu
 
 
 @pytest.mark.asyncio
-async def test_telegram_send_with_inline_keyboard_and_message_options():
+async def test_telegram_send_with_inline_keyboard_and_telegram_text():
     TelegramPlatformEvent = _load_telegram_platform_event()
     components = _load_telegram_components()
     client = MagicMock()
     client.send_message = AsyncMock()
     client.send_chat_action = AsyncMock()
     message = MessageChain()
-    message.message("approve this")
     message.chain.append(
-        components.TelegramMessageOptions(
+        components.TelegramText(
+            "approve this",
             parse_mode="HTML",
             link_preview_is_disabled=True,
             link_preview_url="https://example.com/preview",
@@ -652,6 +662,59 @@ async def test_telegram_send_plain_text_caption_on_single_media(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_telegram_caption_formats_single_media_caption(tmp_path):
+    TelegramPlatformEvent = _load_telegram_platform_event()
+    components = _load_telegram_components()
+    client = MagicMock()
+    client.send_photo = AsyncMock()
+    client.send_message = AsyncMock()
+    client.send_chat_action = AsyncMock()
+    image_path = tmp_path / "single.jpg"
+    image_path.write_bytes(b"\xff\xd8\xff demo")
+    message = MessageChain()
+    message.chain.extend(
+        [
+            components.TelegramCaption("<b>caption</b>", parse_mode="HTML"),
+            Comp.Image(file=str(image_path)),
+        ],
+    )
+
+    await TelegramPlatformEvent.send_with_client(client, message, "123456")
+
+    client.send_message.assert_not_awaited()
+    call = client.send_photo.await_args.kwargs
+    assert call["caption"] == "<b>caption</b>"
+    assert call["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_telegram_caption_formats_album_caption():
+    TelegramPlatformEvent = _load_telegram_platform_event()
+    components = _load_telegram_components()
+    client = MagicMock()
+    client.send_media_group = AsyncMock()
+    client.send_chat_action = AsyncMock()
+    message = MessageChain()
+    message.chain.extend(
+        [
+            components.TelegramCaption("<b>album</b>", parse_mode="HTML"),
+            Comp.Image.fromURL("https://example.com/1.jpg"),
+            Comp.Image.fromURL("https://example.com/2.jpg"),
+            Comp.Image.fromURL("https://example.com/3.jpg"),
+            Comp.Image.fromURL("https://example.com/4.jpg"),
+        ],
+    )
+
+    await TelegramPlatformEvent.send_with_client(client, message, "123456")
+
+    client.send_media_group.assert_awaited_once()
+    call = client.send_media_group.await_args.kwargs
+    assert call["media"][0].caption == "<b>album</b>"
+    assert call["media"][0].parse_mode == "HTML"
+    assert all(not hasattr(item, "caption") for item in call["media"][1:])
+
+
+@pytest.mark.asyncio
 async def test_telegram_send_groups_image_and_video_as_visual_album():
     TelegramPlatformEvent = _load_telegram_platform_event()
     client = MagicMock()
@@ -809,6 +872,49 @@ async def test_telegram_send_rejects_album_caption_over_limit():
 
 
 @pytest.mark.asyncio
+async def test_telegram_caption_requires_following_media():
+    TelegramPlatformEvent = _load_telegram_platform_event()
+    components = _load_telegram_components()
+    client = MagicMock()
+    client.send_message = AsyncMock()
+    client.send_chat_action = AsyncMock()
+    message = MessageChain()
+    message.chain.append(components.TelegramCaption("caption"))
+
+    with pytest.raises(ValueError, match="TelegramCaption"):
+        await TelegramPlatformEvent.send_with_client(client, message, "123456")
+
+
+@pytest.mark.asyncio
+async def test_telegram_caption_rejects_explicit_media_group_caption_conflict():
+    TelegramPlatformEvent = _load_telegram_platform_event()
+    components = _load_telegram_components()
+    client = MagicMock()
+    client.send_media_group = AsyncMock()
+    client.send_chat_action = AsyncMock()
+    message = MessageChain()
+    message.chain.extend(
+        [
+            components.TelegramCaption("outer"),
+            components.TelegramMediaGroup(
+                [
+                    components.TelegramMediaGroup.photo(
+                        "https://example.com/1.jpg",
+                    ),
+                    components.TelegramMediaGroup.photo(
+                        "https://example.com/2.jpg",
+                    ),
+                ],
+                caption="inner",
+            ),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="TelegramCaption"):
+        await TelegramPlatformEvent.send_with_client(client, message, "123456")
+
+
+@pytest.mark.asyncio
 async def test_telegram_send_rejects_reply_markup_on_album():
     TelegramPlatformEvent = _load_telegram_platform_event()
     components = _load_telegram_components()
@@ -873,6 +979,38 @@ async def test_telegram_explicit_media_group_supports_common_media_options(tmp_p
     assert second.supports_streaming is True
     assert second.thumbnail.filename == thumb_path.name
     assert second.thumbnail.args[0].closed
+
+
+@pytest.mark.asyncio
+async def test_telegram_caption_formats_explicit_media_group():
+    TelegramPlatformEvent = _load_telegram_platform_event()
+    components = _load_telegram_components()
+    client = MagicMock()
+    client.send_media_group = AsyncMock()
+    client.send_chat_action = AsyncMock()
+    message = MessageChain()
+    message.chain.extend(
+        [
+            components.TelegramCaption("<b>explicit</b>", parse_mode="HTML"),
+            components.TelegramMediaGroup(
+                [
+                    components.TelegramMediaGroup.photo(
+                        "https://example.com/1.jpg",
+                    ),
+                    components.TelegramMediaGroup.photo(
+                        "https://example.com/2.jpg",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    await TelegramPlatformEvent.send_with_client(client, message, "123456")
+
+    client.send_media_group.assert_awaited_once()
+    call = client.send_media_group.await_args.kwargs
+    assert call["media"][0].caption == "<b>explicit</b>"
+    assert call["media"][0].parse_mode == "HTML"
 
 
 @pytest.mark.asyncio
@@ -948,7 +1086,7 @@ async def test_telegram_send_gif_is_not_grouped_into_photo_album(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_telegram_send_by_session_preserves_markdown_options_and_keyboard():
+async def test_telegram_send_by_session_preserves_telegram_text_and_keyboard():
     TelegramPlatformAdapter = _load_telegram_adapter()
     components = _load_telegram_components()
     adapter = TelegramPlatformAdapter(
@@ -959,8 +1097,7 @@ async def test_telegram_send_by_session_preserves_markdown_options_and_keyboard(
     adapter.client.send_message = AsyncMock()
     adapter.client.send_chat_action = AsyncMock()
     message = MessageChain()
-    message.message("proactive")
-    message.chain.append(components.TelegramMessageOptions(parse_mode="Markdown"))
+    message.chain.append(components.TelegramText("proactive", parse_mode="Markdown"))
     message.chain.append(
         components.TelegramInlineKeyboard(
             [[components.TelegramInlineButton("OK", callback_data="ok")]],
@@ -1079,6 +1216,67 @@ def test_telegram_inline_button_validates_actions_and_callback_data():
     ).to_telegram_button()
     assert styled_button.style == "primary"
     assert styled_button.icon_custom_emoji_id == "5368324170671202286"
+
+
+def test_telegram_components_expose_public_classification_api():
+    TelegramPlatformEvent = _load_telegram_platform_event()
+    components = _load_telegram_components()
+
+    inline_button = components.TelegramInlineButton(
+        "Open",
+        url="https://example.com",
+    )
+    keyboard_button = components.TelegramKeyboardButton(
+        "Share phone",
+        request_contact=True,
+    )
+    inline_keyboard = components.TelegramInlineKeyboard([[inline_button]])
+    reply_keyboard = components.TelegramReplyKeyboard([[keyboard_button]])
+    remove_keyboard = components.TelegramRemoveKeyboard(selective=True)
+    force_reply = components.TelegramForceReply(input_field_placeholder="Reply")
+    telegram_text = components.TelegramText("hello", parse_mode="HTML")
+    telegram_caption = components.TelegramCaption("caption", parse_mode="HTML")
+    media_group_item = components.TelegramMediaGroup.photo(
+        "https://example.com/1.jpg",
+    )
+    media_group = components.TelegramMediaGroup([media_group_item])
+
+    for component in (
+        inline_button,
+        keyboard_button,
+        inline_keyboard,
+        reply_keyboard,
+        remove_keyboard,
+        force_reply,
+        telegram_text,
+        telegram_caption,
+        media_group_item,
+        media_group,
+    ):
+        assert isinstance(component, components.TelegramMessageComponent)
+
+    for button in (inline_button, keyboard_button):
+        assert isinstance(button, components.TelegramButtonComponent)
+        assert isinstance(button, components.SupportsTelegramButton)
+
+    for markup in (inline_keyboard, reply_keyboard, remove_keyboard, force_reply):
+        assert isinstance(markup, components.TelegramReplyMarkupComponent)
+        assert isinstance(markup, components.SupportsTelegramMarkup)
+
+    assert isinstance(telegram_text, components.TelegramTextComponent)
+    assert isinstance(telegram_caption, components.TelegramTextComponent)
+    assert isinstance(media_group_item, components.TelegramMediaGroupComponent)
+    assert isinstance(media_group, components.TelegramMediaGroupComponent)
+
+    message = MessageChain()
+    message.message("hello")
+    message.chain.append(inline_keyboard)
+
+    chain, reply_markup = TelegramPlatformEvent._extract_send_options(message)
+
+    assert reply_markup is inline_keyboard
+    assert len(chain) == 1
+    assert isinstance(chain[0], Comp.Plain)
 
 
 def test_telegram_command_config_normalization_supports_wildcard_and_empty_language():
@@ -1200,7 +1398,9 @@ async def test_telegram_callback_query_is_converted_to_platform_event():
     )
     assert adapter.client.edit_message_text.await_args.kwargs["chat_id"] == "-100"
     assert adapter.client.edit_message_text.await_args.kwargs["message_id"] == 99
-    assert adapter.client.edit_message_reply_markup.await_args.kwargs["chat_id"] == "-100"
+    assert (
+        adapter.client.edit_message_reply_markup.await_args.kwargs["chat_id"] == "-100"
+    )
     assert (
         adapter.client.edit_message_reply_markup.await_args.kwargs["message_id"] == 99
     )
@@ -1210,6 +1410,7 @@ async def test_telegram_callback_query_is_converted_to_platform_event():
 async def test_telegram_inline_query_is_converted_and_answered():
     TelegramPlatformAdapter = _load_telegram_adapter()
     components = _load_telegram_components()
+    inline = _load_telegram_inline()
     adapter = TelegramPlatformAdapter(
         make_platform_config("telegram"),
         {},
@@ -1231,16 +1432,28 @@ async def test_telegram_inline_query_is_converted_and_answered():
     assert event.get_inline_query_text() == "search text"
     assert event.call_llm is True
 
-    result = components.TelegramInlineQueryResult(
+    result = inline.TelegramInlineQueryResult(
         "article",
         id="article-1",
         title="Result",
-        input_message_content=components.TelegramInputTextMessageContent(
+        input_message_content=inline.TelegramInputTextMessageContent(
             "hello",
             parse_mode="MarkdownV2",
         ),
+        reply_markup=components.TelegramInlineKeyboard(
+            [[components.TelegramInlineButton("Open", url="https://example.com")]],
+        ),
     )
-    await event.answer_inline_query([result], cache_time=5, is_personal=True)
+    button = inline.TelegramInlineQueryResultsButton(
+        "More",
+        start_parameter="more-results",
+    )
+    await event.answer_inline_query(
+        [result],
+        cache_time=5,
+        is_personal=True,
+        button=button,
+    )
 
     answer_call = adapter.client.answer_inline_query.await_args.kwargs
     assert answer_call["inline_query_id"] == "inline-id"
@@ -1248,6 +1461,57 @@ async def test_telegram_inline_query_is_converted_and_answered():
     assert answer_call["is_personal"] is True
     assert answer_call["results"][0].title == "Result"
     assert answer_call["results"][0].input_message_content.message_text == "hello"
+    assert (
+        answer_call["results"][0].reply_markup.inline_keyboard[0][0].url
+        == "https://example.com"
+    )
+    assert answer_call["button"].text == "More"
+    assert answer_call["button"].start_parameter == "more-results"
+
+
+def test_telegram_inline_mode_models_are_not_message_components():
+    components = _load_telegram_components()
+    inline = _load_telegram_inline()
+
+    content = inline.TelegramInputTextMessageContent("hello")
+    result = inline.TelegramInlineQueryResult(
+        "article",
+        id="article-1",
+        title="Result",
+        input_message_content=content,
+    )
+    button = inline.TelegramInlineQueryResultsButton("More")
+
+    from astrbot.api.message_components import BaseMessageComponent
+
+    assert not isinstance(content, BaseMessageComponent)
+    assert not isinstance(result, BaseMessageComponent)
+    assert not isinstance(button, BaseMessageComponent)
+    assert not isinstance(content, components.TelegramMessageComponent)
+    assert not isinstance(result, components.TelegramMessageComponent)
+    assert not isinstance(button, components.TelegramMessageComponent)
+
+
+@pytest.mark.asyncio
+async def test_telegram_send_does_not_treat_inline_mode_model_as_send_component():
+    TelegramPlatformEvent = _load_telegram_platform_event()
+    inline = _load_telegram_inline()
+    client = MagicMock()
+    client.send_message = AsyncMock()
+    client.send_chat_action = AsyncMock()
+    message = MessageChain()
+    message.chain.append(
+        inline.TelegramInlineQueryResult(
+            "article",
+            id="article-1",
+            title="Result",
+            input_message_content=inline.TelegramInputTextMessageContent("hello"),
+        ),
+    )
+
+    await TelegramPlatformEvent.send_with_client(client, message, "123456")
+
+    client.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

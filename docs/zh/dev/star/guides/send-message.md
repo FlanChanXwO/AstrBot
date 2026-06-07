@@ -104,16 +104,18 @@ async def test(self, event: AstrMessageEvent):
 
 ![发送视频消息](https://files.astrbot.app/docs/source/images/plugin/db93a2bb-671c-4332-b8ba-9a91c35623c2.png)
 
-## Telegram 专属发送选项
+## Telegram 专属文本与交互组件
 
-Telegram 适配器支持在 `MessageChain` 中加入 Telegram 专属组件，用于控制 Markdown/HTML 解析、链接预览和 Inline Keyboard。这些组件同样适用于 `self.context.send_message(unified_msg_origin, chains)` 主动发送。
+Telegram 适配器支持在 `MessageChain` 中加入 Telegram 专属组件，用于发送带 Markdown/HTML 解析、链接预览的文本或媒体 caption，并搭配 Inline Keyboard。这些组件同样适用于 `self.context.send_message(unified_msg_origin, chains)` 主动发送。
 
 ```python
 from astrbot.api.event import MessageChain, filter, AstrMessageEvent
+from astrbot.api.message_components import Image
 from astrbot.core.platform.sources.telegram.components import (
+    TelegramCaption,
     TelegramInlineButton,
     TelegramInlineKeyboard,
-    TelegramMessageOptions,
+    TelegramText,
     TelegramReplyKeyboard,
     TelegramKeyboardButton,
     TelegramRemoveKeyboard,
@@ -123,9 +125,9 @@ from astrbot.core.platform.sources.telegram.components import (
 @filter.command("review")
 async def review(self, event: AstrMessageEvent):
     chain = MessageChain()
-    chain.message("**请选择审批动作**\n\n[查看详情](https://example.com/item/42)")
     chain.chain.append(
-        TelegramMessageOptions(
+        TelegramText(
+            "**请选择审批动作**\n\n[查看详情](https://example.com/item/42)",
             parse_mode="MarkdownV2",
             link_preview_is_disabled=False,
             link_preview_url="https://example.com/item/42",
@@ -144,10 +146,12 @@ async def review(self, event: AstrMessageEvent):
             ]
         )
     )
+    chain.chain.append(TelegramCaption("审批附件说明", parse_mode="HTML"))
+    chain.chain.append(Image.fromURL("https://example.com/item/42.png"))
     yield event.chain_result(chain)
 ```
 
-`TelegramMessageOptions.parse_mode` 支持 `MarkdownV2`、`Markdown`、`HTML`，也可以传 `plaintext`、`plain` 或 `none` 发送纯文本。链接预览支持 Telegram `LinkPreviewOptions` 的所有字段：是否禁用预览、预览 URL、小/大媒体偏好、是否显示在文本上方。
+`TelegramText.parse_mode` 与 `TelegramCaption.parse_mode` 支持 `MarkdownV2`、`Markdown`、`HTML`，也可以传 `plaintext`、`plain` 或 `none` 发送纯文本。`TelegramText` 的链接预览字段对应 Telegram `LinkPreviewOptions`：是否禁用预览、预览 URL、小/大媒体偏好、是否显示在文本上方。
 
 `TelegramInlineButton` 每个按钮必须且只能设置一种动作。支持 `url`、`callback_data`、`login_url`、`web_app`、`switch_inline_query`、`switch_inline_query_current_chat`、`switch_inline_query_chosen_chat`、`copy_text`、`callback_game`、`pay`，以及 Bot API 支持时的 `style`、`icon_custom_emoji_id`。`callback_data` 必须是 1-64 UTF-8 字节。
 
@@ -257,12 +261,13 @@ async def on_telegram_button(self, event: AstrMessageEvent):
 
 `event.ack_interaction()` 可以快速确认回调，避免 Telegram 客户端一直显示按钮加载状态；`event.answer_interaction(text, show_alert=False)` 可以回应 callback query，`show_alert=True` 时会弹出提示框。`event.get_interaction_custom_id()` 与 `event.get_interaction_data()` 都会返回 Telegram 的 `callback_data`，也就是上面 `TelegramInlineButton(..., callback_data="approve:42")` 中设置的值。
 
-同一个过滤器入口也可以监听 Telegram inline/member 类事件。处理这些事件时，通常需要从 `event.message_obj.raw_message` 读取 Telegram 原始 `Update` 对象中的字段：
+同一个过滤器入口也可以监听 Telegram inline/member 类事件。Inline Mode 使用独立模型，只用于 `event.answer_inline_query(...)`，不是 `MessageChain` 消息组件，不能放入 `event.chain_result(...)` 的消息链中。处理这些事件时，通常需要从 `event.message_obj.raw_message` 读取 Telegram 原始 `Update` 对象中的字段：
 
 ```python
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.core.platform.sources.telegram.components import (
+from astrbot.core.platform.sources.telegram.inline import (
     TelegramInlineQueryResult,
+    TelegramInlineQueryResultsButton,
     TelegramInputTextMessageContent,
 )
 from astrbot.core.platform.sources.telegram.filters import telegram_event_filter
@@ -281,6 +286,7 @@ async def on_telegram_inline_query(self, event: AstrMessageEvent):
         ],
         cache_time=0,
         is_personal=True,
+        button=TelegramInlineQueryResultsButton("打开更多结果", start_parameter="more"),
     )
 
 @filter.custom_filter(telegram_event_filter("chat_member"))

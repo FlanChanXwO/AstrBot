@@ -104,16 +104,18 @@ async def test(self, event: AstrMessageEvent):
 
 ![Sending video messages](https://files.astrbot.app/docs/source/images/plugin/db93a2bb-671c-4332-b8ba-9a91c35623c2.png)
 
-## Telegram-Specific Send Options
+## Telegram-Specific Text and Interaction Components
 
-The Telegram adapter supports Telegram-specific components in `MessageChain` for Markdown/HTML parsing, link previews, and Inline Keyboard. These components also work with proactive sends through `self.context.send_message(unified_msg_origin, chains)`.
+The Telegram adapter supports Telegram-specific components in `MessageChain` for text or media captions with Markdown/HTML parsing, link previews, and Inline Keyboard. These components also work with proactive sends through `self.context.send_message(unified_msg_origin, chains)`.
 
 ```python
 from astrbot.api.event import MessageChain, filter, AstrMessageEvent
+from astrbot.api.message_components import Image
 from astrbot.core.platform.sources.telegram.components import (
+    TelegramCaption,
     TelegramInlineButton,
     TelegramInlineKeyboard,
-    TelegramMessageOptions,
+    TelegramText,
     TelegramReplyKeyboard,
     TelegramKeyboardButton,
     TelegramRemoveKeyboard,
@@ -123,9 +125,9 @@ from astrbot.core.platform.sources.telegram.components import (
 @filter.command("review")
 async def review(self, event: AstrMessageEvent):
     chain = MessageChain()
-    chain.message("**Choose an approval action**\n\n[Open details](https://example.com/item/42)")
     chain.chain.append(
-        TelegramMessageOptions(
+        TelegramText(
+            "**Choose an approval action**\n\n[Open details](https://example.com/item/42)",
             parse_mode="MarkdownV2",
             link_preview_is_disabled=False,
             link_preview_url="https://example.com/item/42",
@@ -144,10 +146,12 @@ async def review(self, event: AstrMessageEvent):
             ]
         )
     )
+    chain.chain.append(TelegramCaption("Attachment caption", parse_mode="HTML"))
+    chain.chain.append(Image.fromURL("https://example.com/item/42.png"))
     yield event.chain_result(chain)
 ```
 
-`TelegramMessageOptions.parse_mode` supports `MarkdownV2`, `Markdown`, and `HTML`. You can also pass `plaintext`, `plain`, or `none` to send plain text. Link previews support every Telegram `LinkPreviewOptions` field: disabled state, preview URL, small/large media preference, and whether the preview is shown above the text.
+`TelegramText.parse_mode` and `TelegramCaption.parse_mode` support `MarkdownV2`, `Markdown`, and `HTML`. You can also pass `plaintext`, `plain`, or `none` to send plain text. `TelegramText` link preview fields map to Telegram `LinkPreviewOptions`: disabled state, preview URL, small/large media preference, and whether the preview is shown above the text.
 
 Each `TelegramInlineButton` must set exactly one action. Supported actions are `url`, `callback_data`, `login_url`, `web_app`, `switch_inline_query`, `switch_inline_query_current_chat`, `switch_inline_query_chosen_chat`, `copy_text`, `callback_game`, and `pay`, plus `style` and `icon_custom_emoji_id` when supported by the Bot API. `callback_data` must be 1-64 UTF-8 bytes.
 
@@ -257,12 +261,13 @@ async def on_telegram_button(self, event: AstrMessageEvent):
 
 Use `event.ack_interaction()` for a quick acknowledgment so the Telegram client stops showing the button loading state. Use `event.answer_interaction(text, show_alert=False)` to answer the callback query; `show_alert=True` shows an alert dialog. `event.get_interaction_custom_id()` and `event.get_interaction_data()` both return Telegram `callback_data`, which is the value set by `TelegramInlineButton(..., callback_data="approve:42")` above.
 
-The same filter entrypoint can also listen for Telegram inline/member events. For these events, read the original Telegram `Update` object from `event.message_obj.raw_message`:
+The same filter entrypoint can also listen for Telegram inline/member events. Inline Mode uses standalone models that are only for `event.answer_inline_query(...)`; they are not `MessageChain` components and must not be placed in `event.chain_result(...)` chains. For these events, read the original Telegram `Update` object from `event.message_obj.raw_message`:
 
 ```python
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.core.platform.sources.telegram.components import (
+from astrbot.core.platform.sources.telegram.inline import (
     TelegramInlineQueryResult,
+    TelegramInlineQueryResultsButton,
     TelegramInputTextMessageContent,
 )
 from astrbot.core.platform.sources.telegram.filters import telegram_event_filter
@@ -281,6 +286,7 @@ async def on_telegram_inline_query(self, event: AstrMessageEvent):
         ],
         cache_time=0,
         is_personal=True,
+        button=TelegramInlineQueryResultsButton("Open more results", start_parameter="more"),
     )
 
 @filter.custom_filter(telegram_event_filter("chat_member"))

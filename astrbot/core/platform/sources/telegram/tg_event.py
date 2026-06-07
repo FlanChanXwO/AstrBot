@@ -36,23 +36,17 @@ from astrbot.api.platform import AstrBotMessage, MessageType, PlatformMetadata
 from astrbot.core.utils.metrics import Metric
 
 from .components import (
-    TelegramForceReply,
+    TelegramCaption,
     TelegramInlineKeyboard,
-    TelegramInlineQueryResult,
-    TelegramInlineQueryResultsButton,
     TelegramMediaGroup,
     TelegramMediaGroupItem,
-    TelegramMessageOptions,
-    TelegramRemoveKeyboard,
-    TelegramReplyKeyboard,
+    TelegramReplyMarkupComponent,
+    TelegramText,
+    build_link_preview_options,
 )
+from .inline import SupportsTelegramInlineResult, TelegramInlineQueryResultsButton
 
-TelegramReplyMarkup = (
-    TelegramInlineKeyboard
-    | TelegramReplyKeyboard
-    | TelegramRemoveKeyboard
-    | TelegramForceReply
-)
+TelegramReplyMarkup = TelegramReplyMarkupComponent
 TelegramAlbumInputMedia = (
     InputMediaPhoto | InputMediaVideo | InputMediaDocument | InputMediaAudio
 )
@@ -116,6 +110,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         File: ChatAction.UPLOAD_DOCUMENT,
         Image: ChatAction.UPLOAD_PHOTO,
         Plain: ChatAction.TYPING,
+        TelegramText: ChatAction.TYPING,
     }
 
     def __init__(
@@ -134,30 +129,18 @@ class TelegramPlatformEvent(AstrMessageEvent):
         message: MessageChain,
     ) -> tuple[
         list[BaseMessageComponent],
-        TelegramMessageOptions,
         TelegramReplyMarkup | None,
     ]:
         chain: list[BaseMessageComponent] = []
-        options = TelegramMessageOptions()
         reply_markup = None
 
         for item in message.chain:
-            if isinstance(item, TelegramMessageOptions):
-                options = item
-            elif isinstance(
-                item,
-                (
-                    TelegramInlineKeyboard,
-                    TelegramReplyKeyboard,
-                    TelegramRemoveKeyboard,
-                    TelegramForceReply,
-                ),
-            ):
+            if isinstance(item, TelegramReplyMarkupComponent):
                 reply_markup = item
             else:
                 chain.append(item)
 
-        return chain, options, reply_markup
+        return chain, reply_markup
 
     @staticmethod
     def _normalize_parse_mode(parse_mode: str | None) -> str | None:
@@ -179,18 +162,34 @@ class TelegramPlatformEvent(AstrMessageEvent):
         return parse_mode.strip().lower() in {"plain", "plaintext", "none"}
 
     @classmethod
-    def _build_text_payload(
+    def _build_reply_markup_payload(
         cls,
         payload: dict[str, Any],
-        options: TelegramMessageOptions,
         reply_markup: TelegramReplyMarkup | None,
     ) -> dict[str, Any]:
         send_payload = dict(payload)
-        link_preview_options = options.to_link_preview_options()
-        if link_preview_options is not None:
-            send_payload["link_preview_options"] = link_preview_options
         if reply_markup is not None:
             send_payload["reply_markup"] = reply_markup.to_telegram_markup()
+        return send_payload
+
+    @classmethod
+    def _build_telegram_text_payload(
+        cls,
+        payload: dict[str, Any],
+        text: TelegramText,
+        reply_markup: TelegramReplyMarkup | None,
+    ) -> dict[str, Any]:
+        send_payload = cls._build_reply_markup_payload(payload, reply_markup)
+        link_preview_options = build_link_preview_options(
+            link_preview_options=text.link_preview_options,
+            link_preview_is_disabled=text.link_preview_is_disabled,
+            link_preview_url=text.link_preview_url,
+            link_preview_prefer_small_media=text.link_preview_prefer_small_media,
+            link_preview_prefer_large_media=text.link_preview_prefer_large_media,
+            link_preview_show_above_text=text.link_preview_show_above_text,
+        )
+        if link_preview_options is not None:
+            send_payload["link_preview_options"] = link_preview_options
         return send_payload
 
     @staticmethod
@@ -225,9 +224,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
 
     @staticmethod
     def _convert_inline_query_result(result: Any) -> Any:
-        if isinstance(result, TelegramInlineQueryResult):
-            return result.to_telegram_result()
-        if hasattr(result, "to_telegram_result"):
+        if isinstance(result, SupportsTelegramInlineResult):
             return result.to_telegram_result()
         return result
 
@@ -278,23 +275,20 @@ class TelegramPlatformEvent(AstrMessageEvent):
         payload: dict[str, Any],
         *,
         use_markdown: bool | None = None,
-        options: TelegramMessageOptions | None = None,
+        parse_mode: str | None = None,
     ) -> None:
         """按 Telegram 限制切分文本后逐段发送。"""
-        options = options or TelegramMessageOptions()
-        parse_mode = cls._normalize_parse_mode(options.parse_mode)
+        normalized_parse_mode = cls._normalize_parse_mode(parse_mode)
         for chunk in cls._split_message(text):
-            if parse_mode is not None:
+            if normalized_parse_mode is not None:
                 await client.send_message(
                     text=chunk,
-                    parse_mode=parse_mode,
+                    parse_mode=normalized_parse_mode,
                     **cast(Any, payload),
                 )
                 continue
 
-            if use_markdown is False or cls._is_plaintext_parse_mode(
-                options.parse_mode,
-            ):
+            if use_markdown is False or cls._is_plaintext_parse_mode(parse_mode):
                 await client.send_message(text=chunk, **cast(Any, payload))
                 continue
 
@@ -441,7 +435,6 @@ class TelegramPlatformEvent(AstrMessageEvent):
         caption: str | None,
         *,
         use_markdown: bool | None = None,
-        options: TelegramMessageOptions | None = None,
         parse_mode: str | None = None,
     ) -> dict[str, Any]:
         """构造 Telegram caption 参数，遵守 Bot API 的 caption 长度限制。"""
@@ -452,15 +445,10 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 "Telegram media caption must be 1024 characters or fewer.",
             )
 
-        effective_options = options or TelegramMessageOptions(parse_mode=parse_mode)
-        if parse_mode is not None:
-            effective_options = TelegramMessageOptions(parse_mode=parse_mode)
-        normalized_parse_mode = cls._normalize_parse_mode(effective_options.parse_mode)
+        normalized_parse_mode = cls._normalize_parse_mode(parse_mode)
         if normalized_parse_mode is not None:
             return {"caption": caption, "parse_mode": normalized_parse_mode}
-        if use_markdown is False or cls._is_plaintext_parse_mode(
-            effective_options.parse_mode,
-        ):
+        if use_markdown is False or cls._is_plaintext_parse_mode(parse_mode):
             return {"caption": caption}
         try:
             markdown_caption = telegramify_markdown.markdownify(caption)
@@ -927,9 +915,10 @@ class TelegramPlatformEvent(AstrMessageEvent):
         cls,
         chain: list[BaseMessageComponent],
         start_idx: int,
-    ) -> tuple[str, list[str], list[TelegramMediaComponent], int]:
+    ) -> tuple[str, list[str], str | None, list[TelegramMediaComponent], int]:
         family: str | None = None
         captions: list[str] = []
+        parse_mode: str | None = None
         media: list[TelegramMediaComponent] = []
         idx = start_idx
         while idx < len(chain):
@@ -947,7 +936,30 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 break
             media.append(cast(TelegramMediaComponent, item))
             idx += 1
-        return family or "", captions, media, idx
+        return family or "", captions, parse_mode, media, idx
+
+    @classmethod
+    def _collect_caption_prefix(
+        cls,
+        chain: list[BaseMessageComponent],
+        start_idx: int,
+    ) -> tuple[str | None, str | None, int]:
+        captions: list[str] = []
+        parse_mode: str | None = None
+        idx = start_idx
+        while idx < len(chain):
+            item = chain[idx]
+            if not isinstance(item, TelegramCaption):
+                break
+            captions.append(item.text)
+            if item.parse_mode is not None:
+                if parse_mode is not None and parse_mode != item.parse_mode:
+                    raise ValueError(
+                        "TelegramCaption parse_mode values in the same caption segment must match.",
+                    )
+                parse_mode = item.parse_mode
+            idx += 1
+        return "".join(captions) or None, parse_mode, idx
 
     @classmethod
     def _next_media_index(
@@ -1023,7 +1035,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         *,
         caption: str | None,
         use_markdown: bool | None,
-        options: TelegramMessageOptions,
+        parse_mode: str | None = None,
     ) -> None:
         batches = [
             items[index : index + MEDIA_GROUP_LIMIT]
@@ -1034,7 +1046,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 cls._prepare_caption_payload(
                     caption,
                     use_markdown=use_markdown,
-                    options=options,
+                    parse_mode=parse_mode,
                 )
                 if batch_index == 0
                 else {}
@@ -1063,7 +1075,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         *,
         caption: str | None,
         use_markdown: bool | None,
-        options: TelegramMessageOptions,
+        parse_mode: str | None = None,
     ) -> None:
         caption_consumed = False
         current_batch: list[TelegramMediaComponent] = []
@@ -1081,7 +1093,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 payload,
                 caption=batch_caption,
                 use_markdown=use_markdown,
-                options=options,
+                parse_mode=parse_mode,
             )
             current_batch = []
 
@@ -1100,7 +1112,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
                     caption_payload=cls._prepare_caption_payload(
                         single_caption,
                         use_markdown=use_markdown,
-                        options=options,
+                        parse_mode=parse_mode,
                     ),
                 )
                 continue
@@ -1137,7 +1149,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         message: MessageChain,
         user_name: str,
     ) -> None:
-        chain, options, reply_markup = cls._extract_send_options(message)
+        chain, reply_markup = cls._extract_send_options(message)
 
         has_reply = False
         reply_message_id = None
@@ -1159,7 +1171,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
         action = cls._get_chat_action_for_chain(chain)
         await cls._send_chat_action(client, user_name, action, message_thread_id)
 
-        extra_payload = cls._build_text_payload({}, options, reply_markup)
+        reply_markup_payload = cls._build_reply_markup_payload({}, reply_markup)
         idx = 0
         while idx < len(chain):
             i = chain[idx]
@@ -1170,11 +1182,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
                 payload["reply_to_message_id"] = str(reply_message_id)
             if message_thread_id:
                 payload["message_thread_id"] = message_thread_id
-            media_payload = payload | {
-                key: value
-                for key, value in extra_payload.items()
-                if key != "link_preview_options"
-            }
+            media_payload = payload | reply_markup_payload
 
             if isinstance(i, TelegramMediaGroup):
                 if "reply_markup" in media_payload and len(i.items) > 1:
@@ -1193,6 +1201,86 @@ class TelegramPlatformEvent(AstrMessageEvent):
                     album_payload,
                     use_markdown=message.use_markdown_,
                 )
+            elif isinstance(i, TelegramText):
+                await cls._send_text_chunks(
+                    client,
+                    i.text,
+                    cls._build_telegram_text_payload(payload, i, reply_markup),
+                    use_markdown=message.use_markdown_,
+                    parse_mode=i.parse_mode,
+                )
+            elif isinstance(i, TelegramCaption):
+                caption, caption_parse_mode, media_start_idx = (
+                    cls._collect_caption_prefix(
+                        chain,
+                        idx,
+                    )
+                )
+                if media_start_idx >= len(chain):
+                    raise ValueError(
+                        "TelegramCaption must be followed by media or TelegramMediaGroup.",
+                    )
+                target = chain[media_start_idx]
+                if isinstance(target, TelegramMediaGroup):
+                    if target.caption is not None:
+                        raise ValueError(
+                            "TelegramCaption cannot be combined with TelegramMediaGroup(caption=...).",
+                        )
+                    if "reply_markup" in media_payload and len(target.items) > 1:
+                        raise ValueError(
+                            "Telegram media groups do not support reply_markup. "
+                            "Send buttons in a separate message.",
+                        )
+                    album_payload = {
+                        key: value
+                        for key, value in media_payload.items()
+                        if key != "reply_markup"
+                    }
+                    target = TelegramMediaGroup(
+                        target.items,
+                        caption=caption,
+                        parse_mode=caption_parse_mode,
+                    )
+                    await cls._send_explicit_media_group(
+                        client,
+                        target,
+                        album_payload,
+                        use_markdown=message.use_markdown_,
+                    )
+                    idx = media_start_idx + 1
+                    continue
+                if cls._media_family(target) is None:
+                    raise ValueError(
+                        "TelegramCaption must be followed by media or TelegramMediaGroup.",
+                    )
+                _, captions, segment_parse_mode, media, next_idx = (
+                    cls._collect_media_segment(
+                        chain,
+                        media_start_idx,
+                    )
+                )
+                effective_parse_mode = caption_parse_mode or segment_parse_mode
+                if media:
+                    if "reply_markup" in media_payload and len(media) > 1:
+                        raise ValueError(
+                            "Telegram media groups do not support reply_markup. "
+                            "Send buttons in a separate message.",
+                        )
+                    album_payload = {
+                        key: value
+                        for key, value in media_payload.items()
+                        if key != "reply_markup"
+                    }
+                    await cls._send_component_media_segment(
+                        client,
+                        media,
+                        album_payload if len(media) > 1 else media_payload,
+                        caption=(caption or "") + "".join(captions) or None,
+                        use_markdown=message.use_markdown_,
+                        parse_mode=effective_parse_mode,
+                    )
+                    idx = next_idx
+                    continue
             elif isinstance(i, Plain):
                 if at_user_id and not at_flag:
                     i.text = f"@{at_user_id} {i.text}"
@@ -1202,14 +1290,15 @@ class TelegramPlatformEvent(AstrMessageEvent):
                     await cls._send_text_chunks(
                         client,
                         i.text,
-                        payload | extra_payload,
+                        payload | reply_markup_payload,
                         use_markdown=message.use_markdown_,
-                        options=options,
                     )
                 else:
-                    _, captions, media, next_idx = cls._collect_media_segment(
-                        chain,
-                        idx,
+                    _, captions, caption_parse_mode, media, next_idx = (
+                        cls._collect_media_segment(
+                            chain,
+                            idx,
+                        )
                     )
                     if media:
                         if "reply_markup" in media_payload and len(media) > 1:
@@ -1228,12 +1317,17 @@ class TelegramPlatformEvent(AstrMessageEvent):
                             album_payload if len(media) > 1 else media_payload,
                             caption="".join(captions) or None,
                             use_markdown=message.use_markdown_,
-                            options=options,
+                            parse_mode=caption_parse_mode,
                         )
                         idx = next_idx
                         continue
             elif isinstance(i, Image | Video | File):
-                _, captions, media, next_idx = cls._collect_media_segment(chain, idx)
+                _, captions, caption_parse_mode, media, next_idx = (
+                    cls._collect_media_segment(
+                        chain,
+                        idx,
+                    )
+                )
                 if media:
                     if "reply_markup" in media_payload and len(media) > 1:
                         raise ValueError(
@@ -1251,7 +1345,7 @@ class TelegramPlatformEvent(AstrMessageEvent):
                         album_payload if len(media) > 1 else media_payload,
                         caption="".join(captions) or None,
                         use_markdown=message.use_markdown_,
-                        options=options,
+                        parse_mode=caption_parse_mode,
                     )
                     idx = next_idx
                     continue
